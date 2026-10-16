@@ -38,6 +38,58 @@
 >
 >  打开纯网页版（无需 Python / 服务器），在左侧编辑、右侧预览。
 
+**用 AI Agent 排版：把 Skill 装进 AI，之后直接发文章给它**
+
+* 复制下一节《把两个 Skill 装进 AI Agent》里的一段话发给 AI，它会自动安装并验证；
+  装好后只要说「帮我把这篇文章排成公众号」即可。
+
+
+
+***
+
+## 把两个 Skill 装进 AI Agent（复制一段话即可）
+
+仓库自带两个 AI Skill（**wx-layout** 排版器、**wx-theme-extractor** 主题提取器）。
+无需手动找目录、复制文件：**把下面这段话连同仓库路径发给你的 AI Agent，它会自动完成安装与验证。**
+
+> 前提：AI Agent 能访问你下载 / 克隆的 wx-layout 仓库；本机已装 Python 3.8+（用于安装验证与日常排版）。
+
+**第一步：复制以下内容，把 `<仓库路径>` 替换为实际路径后发给 AI**
+
+```
+请帮我把「公众号排版工坊（wx-layout）」配套的两个 AI Skill 安装到你的技能目录，并验证。
+
+仓库路径（含 README 的目录）：<仓库路径，例如 E:\fengdu\wx-layout>
+（若你在本对话中已经能访问这个仓库，直接使用即可。）
+
+要求：
+1. 识别你所在平台的用户技能目录（Agent Skills 目录）；若你不确定路径，先告诉我准确位置，不要随意放置。
+2. 把仓库 skills/ 下的 wx-layout/ 和 wx-theme-extractor/ 两个目录完整复制过去，保持 SKILL.md
+   文件名与 references/、scripts/ 子目录结构不变，不要只复制 SKILL.md。
+3. 这两个 skill 运行时依赖完整的 wx-layout 项目仓库（wx_core.py、render.py、themes/）。请任选其一配置项目根：
+   - 永久设置环境变量 WX_LAYOUT_ROOT 指向仓库路径；或
+   - 之后调用 scripts/theme_contract.py 与 render.py 时一律加 --root <仓库路径>。
+4. 安装后运行验证：
+   python "<技能目录>/wx-layout/scripts/theme_contract.py" 蓝白杂志 --root <仓库路径>
+   能打印主题令牌与 roles 即成功；失败则把报错原文告诉我并修复。
+5. 最后告诉我：安装路径、两个 skill 的触发方式（如「帮我把这篇文章排成公众号」），
+   以及日常排版时我该如何把文章发给你。
+```
+
+**第二步：AI 回复安装成功后，直接把写好的文章发给它**（或拖入 `.md` 文件），说明想用的主题即可。
+
+**也可以手动安装**：把两个 skill 目录复制到对应平台的技能目录，结构保持不变：
+
+| 平台 | 技能目录 |
+|---|---|
+| 豆包办公（Doubao Work） | `C:\Users\<用户名>\AppData\Local\DoubaoWork\User Data\<Profile>\.doubaowork\agent_mode\workspace\.user_skills\` |
+| Claude Code | `~/.claude/skills/`（Windows：`C:\Users\<用户名>\.claude\skills\`） |
+| Cursor | `~/.cursor/skills/`（全局）或项目内 `.cursor/skills/` |
+| 其他兼容 Agent Skills 的平台 | 该平台约定的 skills 目录，保持 `SKILL.md` 结构不变 |
+
+> **不安装也能用**：直接把 `skills/wx-layout/SKILL.md` 连同你写好的文章发给 AI，它会照流程执行。
+> 完整说明见 `skills/README.md`，让任意 AI 排版的通用规则见《docs/AI调用指南.md》。
+
 
 
 ***
@@ -64,7 +116,7 @@
 
 ***
 
-## 三种使用方式
+## 四种使用方式
 
 
 
@@ -161,7 +213,8 @@ python render.py --list-themes
 
 ## 两个 AI Skill（可选）
 
-仓库自带两个 AI Skill，安装与使用说明见 `skills/README.md`：
+仓库自带两个 AI Skill，**自动安装的方法见上方《把两个 Skill 装进 AI Agent》**，
+完整说明见 `skills/README.md`：
 
 * **wx-layout（排版器，高频）**：把你**已写好的文章**（文件或全文）交给它，它读取主题真实
   契约，保留你的原文、只加模块标记，再调 `render.py` 渲染并引导一键复制。**只排版、不代写**。
