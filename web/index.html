@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>公众号排版工坊 · 离线版</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f1f3f6; color: #1f2937; display: flex; flex-direction: column; }
+  header { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 9px 14px;
+           display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+  header .brand { font-weight: 800; font-size: 15px; margin-right: 6px; }
+  select, button, .file-btn { font-size: 13px; border: 1px solid #d1d5db; background: #fff;
+           color: #1f2937; border-radius: 7px; padding: 6px 11px; cursor: pointer; }
+  button.primary { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 700; }
+  button:hover, select:hover, .file-btn:hover { border-color: #93c5fd; }
+  #status { font-size: 12px; color: #6b7280; margin-left: auto; }
+  main { flex: 1; display: flex; min-height: 0; }
+  .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .pane h3 { font-size: 12px; color: #6b7280; font-weight: 700; margin: 0; padding: 7px 12px;
+             background: #fafbfc; border-bottom: 1px solid #e5e7eb; }
+  #editor { flex: 1; width: 100%; border: none; outline: none; resize: none; padding: 14px;
+            font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 13px;
+            line-height: 1.7; background: #fff; color: #1f2937; }
+  .divider-v { width: 1px; background: #e5e7eb; }
+  #preview { flex: 1; width: 100%; border: none; background: #f1f3f6; }
+  #copySrc { position: fixed; left: -99999px; top: 0; width: 677px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">公众号排版工坊</span>
+  <select id="sampleSel" title="载入内置示例"></select>
+  <select id="themeSel" title="选择主题"></select>
+  <button class="primary" id="renderBtn">渲染</button>
+  <button id="copyBtn">一键复制</button>
+  <button id="downloadBtn">下载 HTML</button>
+  <span id="status">就绪</span>
+</header>
+<main>
+  <section class="pane">
+    <h3>Markdown / 模块源稿</h3>
+    <textarea id="editor" spellcheck="false"></textarea>
+  </section>
+  <div class="divider-v"></div>
+  <section class="pane">
+    <h3>预览</h3>
+    <iframe id="preview" title="预览"></iframe>
+  </section>
+</main>
+<div id="copySrc"></div>
+
+<script src="core.js"></script>
+<script src="themes/blue-editorial.js"></script>
+<script src="themes/warm-horizontal.js"></script>
+<script src="themes/warm-brown-journal.js"></script>
+<script src="themes/green-tech.js"></script>
+<script src="samples.js"></script>
+<script>
+(function () {
+  var editor = document.getElementById("editor");
+  var preview = document.getElementById("preview");
+  var statusEl = document.getElementById("status");
+  var themeSel = document.getElementById("themeSel");
+  var sampleSel = document.getElementById("sampleSel");
+  var copySrc = document.getElementById("copySrc");
+  var lastHtml = "";
+
+  /* 填充主题下拉 */
+  WX.listThemes().forEach(function (t) {
+    var o = document.createElement("option");
+    o.value = t.name; o.textContent = t.label;
+    themeSel.appendChild(o);
+  });
+
+  /* 填充示例下拉 */
+  WX_SAMPLES.forEach(function (s, i) {
+    var o = document.createElement("option");
+    o.value = String(i); o.textContent = s.label;
+    sampleSel.appendChild(o);
+  });
+
+  function currentEngine() {
+    var theme = WX.getTheme(themeSel.value);
+    return new WX.Engine(theme);
+  }
+
+  function render() {
+    var md = editor.value;
+    var html;
+    try {
+      html = currentEngine().render(md);
+    } catch (e) {
+      statusEl.textContent = "渲染出错：" + e.message;
+      return;
+    }
+    lastHtml = html;
+    copySrc.innerHTML = html;
+    var leaves = (html.match(/leaf=""/g) || []).length;
+    var imgs = (html.match(/<img /g) || []).length;
+    var doc = '<!DOCTYPE html><html><head><meta charset="utf-8"></head>' +
+      '<body style="margin:0;background:#f1f3f6;padding:18px 0;">' + html + "</body></html>";
+    preview.srcdoc = doc;
+    statusEl.textContent = "已渲染 · leaf " + leaves + " · 图片 " + imgs;
+  }
+
+  var timer = null;
+  function scheduleRender() {
+    clearTimeout(timer);
+    timer = setTimeout(render, 350);
+  }
+
+  function copyArticle() {
+    var node = copySrc.firstChild;
+    if (!node) { render(); node = copySrc.firstChild; }
+    function report(ok, msg) {
+      statusEl.textContent = msg;
+    }
+    if (navigator.clipboard && window.ClipboardItem) {
+      var data = [new ClipboardItem({
+        "text/html": new Blob([copySrc.innerHTML], { type: "text/html" }),
+        "text/plain": new Blob([copySrc.innerText || ""], { type: "text/plain" })
+      })];
+      navigator.clipboard.write(data).then(function () {
+        report(true, "已复制（富文本），可到公众号后台 Ctrl+V");
+      }, function () { fallbackCopy(); });
+    } else fallbackCopy();
+
+    function fallbackCopy() {
+      var range = document.createRange();
+      range.selectNodeContents(copySrc);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      try {
+        if (document.execCommand("copy"))
+          report(true, "已复制（兼容模式），可到公众号后台 Ctrl+V");
+        else report(false, "复制失败，请手动全选复制");
+      } catch (e) { report(false, "复制失败：" + e.message); }
+      sel.removeAllRanges();
+    }
+  }
+
+  function downloadHtml() {
+    var html = '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n' +
+      '<title>排版预览</title>\n</head>\n<body style="margin:0;background:#f1f3f6;padding:18px 0;">\n' +
+      lastHtml + "\n</body>\n</html>";
+    var blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "排版预览.html";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    statusEl.textContent = "已下载 HTML";
+  }
+
+  /* 事件 */
+  editor.addEventListener("input", scheduleRender);
+  themeSel.addEventListener("change", render);
+  document.getElementById("renderBtn").addEventListener("click", render);
+  document.getElementById("copyBtn").addEventListener("click", copyArticle);
+  document.getElementById("downloadBtn").addEventListener("click", downloadHtml);
+  sampleSel.addEventListener("change", function () {
+    var s = WX_SAMPLES[Number(sampleSel.value)];
+    editor.value = s.md;
+    /* 尽量切到与示例匹配的主题 */
+    var map = { "蓝白": "blue-editorial", "暖橙": "warm-horizontal",
+                "暖棕": "warm-brown-journal", "翠绿": "green-tech" };
+    Object.keys(map).forEach(function (k) {
+      if (s.label.indexOf(k) >= 0) themeSel.value = map[k];
+    });
+    render();
+  });
+
+  /* 初始：载入共享示例 */
+  editor.value = WX_SAMPLES[0].md;
+  render();
+})();
+</script>
+</body>
+</html>

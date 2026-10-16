@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 渲染产物（examples 下已跟踪的示例不受影响）
+*-wx.html
+fengdu-preview*.html
+preview-*.html
+
+# 个人/内部资料（仅本地，绝不上传 GitHub）
+internal/
+
+# 主题提取/分析输出（含他人文章内容与开发中间产物，不入库）
+tools/analysis/
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+.vscode/
+.idea/

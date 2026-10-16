@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>暖橙横向 · 排版预览</title>
+<style>
+  body { margin:0; background:#eceef1; }
+  .toolbar { position:sticky; top:0; z-index:9; text-align:center; padding:12px;
+             background:#fff; border-bottom:1px solid #e5e5e5; }
+  .toolbar button { border:none; background:#ea8a2e; color:#fff; font-size:15px;
+             padding:10px 26px; border-radius:8px; cursor:pointer; }
+  #article { max-width:677px; margin:24px auto; background:#fff; padding:20px 8px 50px;
+             box-shadow:0 2px 16px rgba(0,0,0,.08); border-radius:4px; }
+  #tip { font-size:13px; color:#666; margin-left:14px; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <button onclick="copyArticle()">一键复制排版结果</button>
+  <span id="tip">复制后，到公众号后台正文编辑区 Ctrl+V</span>
+</div>
+<div id="article"><section style="max-width:677px;margin:0 auto;padding:8px 16px;box-sizing:border-box;background:#fffaf3;color:#78350f;font-family:-apple-system,system-ui,'PingFang SC','Microsoft YaHei',sans-serif;line-height:1.75;"><section style="margin-top:20px;"><p style="margin:0;font-size:15px;line-height:1.95;text-align:justify;color:#78350f;letter-spacing:0;"><span leaf="">这是正文演示段落，包含<span textstyle="" style="color:rgb(124,45,18);font-weight:600;">加粗强调</span>，还有<a href="https://example.com" style="color:#ea8a2e;text-decoration:underline;">链接</a>。</span></p></section><section style="margin-top:20px;"><p style="margin:0;font-size:15px;line-height:1.95;text-align:justify;color:#78350f;letter-spacing:0;"><span leaf="">• 列表项一，可含<span textstyle="" style="color:rgb(124,45,18);font-weight:600;">加粗</span></span></p></section><section style="margin-top:20px;"><p style="margin:0;font-size:15px;line-height:1.95;text-align:justify;color:#78350f;letter-spacing:0;"><span leaf="">• 列表项二</span></p></section><section style="margin-top:24px;"><section style="display:flex;align-items:center;gap:14px;background:#fffaf3;border:1px solid #fed7aa;border-radius:12px;padding:15px 16px;"><span style="width:40px;height:40px;border-radius:9px;background:#fed7aa;flex-shrink:0;display:flex;align-items:center;justify-content:center;"><span style="width:14px;height:14px;border-radius:4px;background:#ea8a2e;display:inline-block;"></span></span><span style="flex:1;min-width:0;"><p style="margin:0 0 6px;font-size:16px;font-weight:900;color:#7c2d12;"><span leaf="">卡片标题占位</span></p><p style="margin:0;font-size:13.5px;line-height:1.8;color:#78350f;"><span leaf="">这是卡片摘要演示文字，替换成你的简介内容。</span></p></span></section></section></section></div>
+<script>
+function copyArticle(){
+  var node=document.getElementById('article'), tip=document.getElementById('tip');
+  function ok(){ tip.textContent='已复制！现在去公众号后台 Ctrl+V'; tip.style.color='#1a9e54'; }
+  function fail(){ tip.textContent='复制失败，请手动选中正文复制'; tip.style.color='#d33'; }
+  if(navigator.clipboard&&window.ClipboardItem){
+    var data=new ClipboardItem({
+      'text/html':new Blob([node.innerHTML],{type:'text/html'}),
+      'text/plain':new Blob([node.innerText],{type:'text/plain'})
+    });
+    navigator.clipboard.write([data]).then(ok).catch(selectFallback);
+  } else { selectFallback(); }
+  function selectFallback(){
+    var range=document.createRange(); range.selectNodeContents(node);
+    var sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    try{ document.execCommand('copy')?ok():fail(); }catch(e){ fail(); }
+  }
+}
+</script>
+</body>
+</html>

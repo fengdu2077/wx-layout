@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>公众号排版工坊 · 离线版</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f1f3f6; color: #1f2937; display: flex; flex-direction: column; }
+  header { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 9px 14px;
+           display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+  header .brand { font-weight: 800; font-size: 15px; margin-right: 6px; }
+  select, button, .file-btn { font-size: 13px; border: 1px solid #d1d5db; background: #fff;
+           color: #1f2937; border-radius: 7px; padding: 6px 11px; cursor: pointer; }
+  button.primary { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 700; }
+  button:hover, select:hover, .file-btn:hover { border-color: #93c5fd; }
+  #status { font-size: 12px; color: #6b7280; margin-left: auto; }
+  main { flex: 1; display: flex; min-height: 0; }
+  .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .pane h3 { font-size: 12px; color: #6b7280; font-weight: 700; margin: 0; padding: 7px 12px;
+             background: #fafbfc; border-bottom: 1px solid #e5e7eb; }
+  #editor { flex: 1; width: 100%; border: none; outline: none; resize: none; padding: 14px;
+            font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 13px;
+            line-height: 1.7; background: #fff; color: #1f2937; }
+  .divider-v { width: 1px; background: #e5e7eb; }
+  #preview { flex: 1; width: 100%; border: none; background: #f1f3f6; }
+  #copySrc { position: fixed; left: -99999px; top: 0; width: 677px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">公众号排版工坊</span>
+  <select id="sampleSel" title="载入内置示例"></select>
+  <select id="themeSel" title="选择主题"></select>
+  <button class="primary" id="renderBtn">渲染</button>
+  <button id="copyBtn">一键复制</button>
+  <button id="downloadBtn">下载 HTML</button>
+  <span id="status">就绪</span>
+</header>
+<main>
+  <section class="pane">
+    <h3>Markdown / 模块源稿</h3>
+    <textarea id="editor" spellcheck="false"></textarea>
+  </section>
+  <div class="divider-v"></div>
+  <section class="pane">
+    <h3>预览</h3>
+    <iframe id="preview" title="预览"></iframe>
+  </section>
+</main>
+<div id="copySrc"></div>
+
+<script>
+/* ===== inlined: core.js ===== */
+/* ============================================================
+ * wx-layout 浏览器内核 core.js（wx_core.py 的忠实 JS 移植）
+ * 纯标准浏览器环境、离线、无依赖。负责：
+ *   解析 md/:::模块 → IR；leaf/inline 微信适配；主题路由与 fallback；渲染。
+ * 主题通过 window.WX_THEMES 注册（见 themes/*.js）。
+ * ============================================================ */
+(function (global) {
+  "use strict";
+
+  var DEFAULT_CONTAINERS = ["issue", "quote", "author", "card", "gallery", "callout",
+    "faq", "timeline", "compare", "steps", "highlights", "profile", "toc", "stats",
+    "keyvalue", "note", "tip", "warning", "code", "table", "cta", "audio"];
+  var SINGLETON_ROLES = ["part", "sub", "shot", "video", "end", "divider", "image"];
+
+  /* ---------- HTML 转义（对应 Python html.escape） ---------- */
+  function esc(s, quote) {
+    s = String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    if (quote) s = s.replace(/"/g, "&quot;");
+    return s;
+  }
+
+  /* ---------- IR Block ---------- */
+  function Block(role, pos, kw, bodyLines, bullet) {
+    this.role = role;
+    this.pos = pos || [];
+    this.kw = kw || {};
+    this.bodyLines = bodyLines || [];
+    this.bullet = !!bullet;
+    this.blocks = [];
+    this.fields = {};
+  }
+  Block.prototype.get = function (i, d) {
+    return i < this.pos.length ? this.pos[i] : (d === undefined ? "" : d);
+  };
+
+  /* ---------- 正则 ---------- */
+  var IMG_RE = /^!\[([^\]]*)\]\(([^)\s]+)\)\s*$/;
+  var HEADING_RE = /^(#{1,6})\s+(.*)$/;
+  var URL_RE = /^(https?:\/\/\S+|[\w\-./\\]+\.(?:png|jpe?g|gif|webp|bmp))\s*$/i;
+  var LINK_RE_G = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)/g;
+  var LINK_ONLY_RE = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)\s*$/;
+  var LIST_LINE_RE = /^\s*[-*]\s+/;
+
+  /* ---------- body 元素解析 ---------- */
+  function parseBodyElements(lines) {
+    var elements = [];
+    var paras = [], buf = [];
+    lines.concat([""]).forEach(function (ln) {
+      if (ln.trim() === "") {
+        if (buf.length) { paras.push(buf); buf = []; }
+      } else buf.push(ln);
+    });
+    if (buf.length) paras.push(buf);
+
+    paras.forEach(function (plines) {
+      if (plines.every(function (x) { return LIST_LINE_RE.test(x); })) {
+        var items = plines.map(function (x) {
+          return x.replace(LIST_LINE_RE, "").trim();
+        });
+        elements.push({ type: "list", items: items });
+        return;
+      }
+      plines.forEach(function (x) {
+        var s = x.trim(), m;
+        m = s.match(IMG_RE);
+        if (m) { elements.push({ type: "image", alt: m[1], src: m[2] }); return; }
+        m = s.match(HEADING_RE);
+        if (m) { elements.push({ type: "heading", level: m[1].length, text: m[2].trim() }); return; }
+        if (URL_RE.test(s)) { elements.push({ type: "image", alt: "", src: s }); return; }
+        m = s.match(LINK_ONLY_RE);
+        if (m) { elements.push({ type: "link", text: m[1], href: m[2] }); return; }
+        elements.push({ type: "para", text: s });
+      });
+    });
+
+    var links = [];
+    elements.forEach(function (e) {
+      if (e.type === "link") links.push({ text: e.text, href: e.href });
+      if (e.type === "para") {
+        var g, re = new RegExp(LINK_RE_G.source, "g");
+        while ((g = re.exec(e.text)) !== null)
+          links.push({ text: g[1], href: g[2] });
+      }
+    });
+    var fields = {
+      images: elements.filter(function (e) { return e.type === "image"; }).map(function (e) { return e.src; }),
+      paras: elements.filter(function (e) { return e.type === "para"; }).map(function (e) { return e.text; }),
+      headings: elements.filter(function (e) { return e.type === "heading"; }).map(function (e) { return e.text; }),
+      lists: elements.filter(function (e) { return e.type === "list"; }).map(function (e) { return e.items; }),
+      links: links
+    };
+    fields.image = fields.images[0] || "";
+    fields.link = fields.links[0] ? fields.links[0].href : "";
+    fields.heading = fields.headings[0] || "";
+    return [elements, fields];
+  }
+
+  /* ---------- 指令头解析 ---------- */
+  function parseHead(head) {
+    var pos = [], kw = {};
+    head.split("|").map(function (x) { return x.trim(); }).forEach(function (part) {
+      if (!part) return;
+      var m = part.match(/^([A-Za-z_][\w\-]*)\s*=\s*(.+)$/);
+      if (m) kw[m[1]] = m[2].trim();
+      else pos.push(part);
+    });
+    return [pos, kw];
+  }
+
+  /* ---------- 顶层解析 ---------- */
+  function parse(mdText, containers) {
+    mdText = mdText.replace(/<!--[\s\S]*?-->/g, "");  // 剥离 HTML 注释
+    var lines = mdText.split(/\r?\n/);
+    var out = [], i = 0;
+    while (i < lines.length) {
+      var s = lines[i].trim();
+      if (!s) { i++; continue; }
+
+      if (s.indexOf(":::") !== 0) {
+        var buf = [];
+        while (i < lines.length && lines[i].trim().indexOf(":::") !== 0) {
+          buf.push(lines[i]); i++;
+        }
+        var text = buf.join("\n");
+        var chunks = text.split(/\n\s*\n/).map(function (p) { return p.trim(); })
+          .filter(function (p) { return p; });
+        chunks.forEach(function (chunk) {
+          var clines = chunk.split("\n").filter(function (ln) { return ln.trim(); });
+          var items = clines.filter(function (ln) { return LIST_LINE_RE.test(ln); });
+          if (items.length && items.length === clines.length) {
+            items.forEach(function (it) {
+              var b = new Block("para", null, null, null, true);
+              var pf = parseBodyElements([it]);
+              b.blocks = pf[0]; b.fields = pf[1];
+              b.fields.text = it.replace(LIST_LINE_RE, "").trim();
+              out.push(b);
+            });
+          } else {
+            var b = new Block("para");
+            var pf = parseBodyElements(clines);
+            b.blocks = pf[0]; b.fields = pf[1];
+            b.fields.text = clines.map(function (x) { return x.trim(); }).join(" ");
+            out.push(b);
+          }
+        });
+        continue;
+      }
+
+      var m = s.match(/^:::([A-Za-z_][\w\-]*)\s*(.*)$/);
+      if (!m) { i++; continue; }
+      var role = m[1], head = m[2];
+      var ph = parseHead(head), pos = ph[0], kw = ph[1];
+
+      if (containers.indexOf(role) >= 0) {
+        var body = [], j = i + 1;
+        while (j < lines.length && lines[j].trim() !== ":::") {
+          body.push(lines[j]); j++;
+        }
+        var b = new Block(role, pos, kw, body);
+        var pf = parseBodyElements(body);
+        b.blocks = pf[0]; b.fields = pf[1];
+        out.push(b);
+        i = j + 1;
+      } else {
+        out.push(new Block(role, pos, kw));
+        i++;
+      }
+    }
+    return out;
+  }
+
+  /* ---------- 渲染引擎 ---------- */
+  function Engine(theme) {
+    this.theme = theme;
+    this.t = (theme.THEME.tokens) || {};
+  }
+  Engine.prototype.inline = function (text) {
+    text = esc(text, false);
+    var stash = {};
+    function keep(frag) {
+      var k = "\x00" + Object.keys(stash).length + "\x00";
+      stash[k] = frag; return k;
+    }
+    var self = this;
+    text = text.replace(/\*\*([^*]+)\*\*/g, function (mm, p1) {
+      return keep('<span textstyle="" style="color:' +
+        (self.t.BOLD_INK || "rgb(17,24,39)") + ';font-weight:600;">' + p1 + "</span>");
+    });
+    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, function (mm, p1, p2) {
+      return keep('<a href="' + p2 + '" style="color:' +
+        (self.t.BLUE || "#2563eb") + ';text-decoration:underline;">' + p1 + "</a>");
+    });
+    Object.keys(stash).forEach(function (k) { text = text.split(k).join(stash[k]); });
+    return text;
+  };
+  Engine.prototype.leaf = function (text) {
+    return '<span leaf="">' + this.inline(text) + "</span>";
+  };
+  Engine.prototype.escAttr = function (text) { return esc(text, true); };
+  Engine.prototype.containers = function () {
+    var extra = this.theme.THEME.containers || [];
+    var set = {};
+    DEFAULT_CONTAINERS.concat(extra).forEach(function (r) {
+      if (SINGLETON_ROLES.indexOf(r) < 0) set[r] = 1;
+    });
+    return Object.keys(set);
+  };
+  Engine.prototype.render = function (mdText) {
+    var blocks = parse(mdText, this.containers());
+    var roles = this.theme.ROLES || {};
+    var pieces = [];
+    for (var i = 0; i < blocks.length; i++) {
+      var b = blocks[i], fn = roles[b.role];
+      if (fn) pieces.push(fn(b, this));
+      else if (this.theme.fallback) pieces.push(this.theme.fallback(b, this));
+      else pieces.push(this.defaultFallback(b));
+    }
+    var t = this.t;
+    return '<section style="max-width:677px;margin:0 auto;padding:8px 16px;box-sizing:border-box;' +
+      'background:' + (t.PAGE_BG || "#ffffff") + ';color:' + (t.TEXT || "#374151") +
+      ';font-family:' + (t.FONT || "") + ';line-height:1.75;">' + pieces.join("") + "</section>";
+  };
+  Engine.prototype.videoPlaceholder = function (b) {
+    // 视频本身是素材库引用的播放框、无法用网页样式生成；但可放进卡片框：上方视频位（后台插入视频），
+    // 下方保留标题/说明。粘贴后视频留在框内、下方文字不丢失。
+    var title = (b.get && b.get(0)) || b.pos[0] || "";
+    var desc = (b.get && b.get(1)) || b.pos[1];
+    var slot = '<section style="width:100%;aspect-ratio:16/9;min-height:180px;background:#0f172a;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+      'text-align:center;padding:16px;box-sizing:border-box;">' +
+      '<p style="margin:0;font-size:14px;font-weight:800;color:#e2e8f0;letter-spacing:0;">' +
+      "▶ 视频位置｜在此插入视频</p>" +
+      '<p style="margin:8px 0 0;font-size:11px;line-height:1.7;color:#94a3b8;letter-spacing:0;">' +
+      "将光标放本框，点后台工具栏「视频」，从素材库上传/选择对应视频，替换本提示。</p></section>";
+    var cap = "";
+    if (title) cap += '<p style="margin:12px 14px 0;font-size:14px;font-weight:800;color:#1e293b;' +
+      'letter-spacing:0;">' + this.leaf(title) + "</p>";
+    if (desc) cap += '<p style="margin:5px 14px 13px;font-size:12px;line-height:1.7;color:#64748b;' +
+      'letter-spacing:0;">' + this.leaf(desc) + "</p>";
+    return '<section style="margin:24px 0;"><section style="border:1px solid #e2e8f0;' +
+      'border-radius:12px;overflow:hidden;background:#ffffff;">' + slot + cap + "</section></section>";
+  };
+  Engine.prototype.defaultFallback = function (b) {
+    if (b.role === "video") {
+      return this.videoPlaceholder(b);
+    }
+    if (b.role === "para") {
+      var text = (b.bullet ? "• " : "") + (b.fields.text || "");
+      return '<section style="margin-top:20px;"><p style="margin:0;font-size:15px;' +
+        'line-height:1.95;text-align:justify;color:' + (this.t.TEXT || "#374151") +
+        ';letter-spacing:0;">' + this.leaf(text) + "</p></section>";
+    }
+    var txt = (b.fields.paras || []).join(" ") || b.pos.join(" ");
+    return '<section style="margin-top:16px;padding:10px 12px;background:#f8fafc;' +
+      'border-radius:8px;"><p style="margin:0;font-size:14px;color:' + (this.t.TEXT || "#374151") +
+      ';">' + (txt ? "" : "[" + b.role + "] ") + this.leaf(txt) + "</p></section>";
+  };
+
+  /* ---------- 主题注册与解析 ---------- */
+  var THEMES = {};
+  function registerTheme(theme) { THEMES[theme.THEME.name] = theme; }
+  function listThemes() {
+    return Object.keys(THEMES).map(function (name) {
+      return { name: name, label: THEMES[name].THEME.label || name };
+    });
+  }
+  function getTheme(name) {
+    if (THEMES[name]) return THEMES[name];
+    var keys = Object.keys(THEMES);
+    for (var i = 0; i < keys.length; i++) {
+      var th = THEMES[keys[i]];
+      if (th.THEME.label === name) return th;
+    }
+    throw new Error("主题不存在：" + name);
+  }
+
+  global.WX = {
+    Block: Block, Engine: Engine, parse: parse,
+    esc: esc, registerTheme: registerTheme,
+    listThemes: listThemes, getTheme: getTheme
+  };
+})(window);
+
+</script>
+<script>
+/* ===== inlined: themes/blue-editorial.js ===== */
+/* 主题：蓝白杂志（blue-editorial）—— themes/蓝白杂志.py 的 JS 移植 */
+(function (global) {
+  "use strict";
+
+  var THEME = {
+    name: "blue-editorial", label: "蓝白杂志", version: "1.0", containers: [],
+    tokens: {
+      BLUE: "#2563eb", BLUE_BRIGHT: "#3b82f6", BORDER_BLUE: "#dbeafe",
+      INK: "#111827", BOLD_INK: "rgb(17,24,39)", TEXT: "#374151", MUTED: "#9ca3af",
+      PAGE_BG: "#ffffff",
+      FONT: "'IBM Plex Sans',-apple-system,system-ui,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif"
+    }
+  };
+
+  function renderPara(b, c) {
+    var t = c.t;
+    var text = (b.bullet ? "• " : "") + (b.fields.text || "");
+    return '<section style="margin-top:20px;font-family:' + t.FONT + ';">' +
+      '<p style="margin:0;font-size:15px;line-height:1.95;text-align:justify;color:' +
+      t.TEXT + ';letter-spacing:0;">' + c.leaf(text) + "</p></section>";
+  }
+
+  function renderIssue(b, c) {
+    var t = c.t;
+    var column = b.get(0), date = b.get(1), cover = b.fields.image || "";
+    var texts = b.blocks.filter(function (e) {
+      return e.type === "para" || e.type === "heading";
+    }).map(function (e) { return e.text; });
+    var label = texts[0] || "EDITOR'S NOTE";
+    var leads = texts.slice(1);
+    var leadHtml = leads.map(function (p, j) {
+      return '<p style="margin:' + (j < leads.length - 1 ? "0 0 7px" : "0") +
+        ';font-size:15px;font-weight:900;line-height:1.7;color:' + t.INK + ';">' +
+        c.leaf(p) + "</p>";
+    }).join("");
+
+    return '<section style="background:#ffffff;border:1px solid ' + t.BORDER_BLUE +
+      ';border-radius:12px;overflow:hidden;box-shadow:0 4px 14px rgba(37,99,235,0.06);">' +
+      '<section style="padding:13px 16px 12px;display:flex;align-items:center;gap:8px;">' +
+      '<span style="width:7px;height:7px;background:' + t.BLUE +
+      ';border-radius:50%;display:inline-block;overflow:hidden;"><span leaf="">&nbsp;</span></span>' +
+      '<span style="font-size:9px;font-weight:800;letter-spacing:0;color:' + t.BLUE + ';">' +
+      c.leaf(column) + "</span>" +
+      '<span style="height:1px;background:linear-gradient(90deg,#bfdbfe,rgba(191,219,254,0));flex:1;display:inline-block;"><span leaf="">&nbsp;</span></span>' +
+      '<span style="font-size:9px;font-weight:700;color:' + t.MUTED + ';">' + c.leaf(date) +
+      "</span></section>" +
+      '<figure style="margin:0;line-height:0;"><span leaf="">' +
+      '<img src="' + c.escAttr(cover) +
+      '" style="max-width:100%;height:auto;display:block;margin:0 auto;" /></span></figure>' +
+      '<section style="padding:15px 17px 17px;background:linear-gradient(135deg,#eff6ff,#ffffff);border-top:1px solid ' +
+      t.BORDER_BLUE + ';">' +
+      '<p style="margin:0 0 8px;font-size:9px;font-weight:800;letter-spacing:0;color:' + t.BLUE +
+      ';">' + c.leaf(label) + "</p>" + leadHtml + "</section></section>";
+  }
+
+  function renderPart(b, c) {
+    var t = c.t;
+    var num = b.get(0), title = b.get(1), en = b.get(2);
+    return '<section style="margin-top:60px;font-family:' + t.FONT + ';">' +
+      '<section style="display:flex;align-items:center;gap:16px;">' +
+      '<section style="text-align:center;flex-shrink:0;">' +
+      '<p style="margin:0;font-size:34px;font-weight:800;color:' + t.BLUE +
+      ';line-height:1;letter-spacing:0;">' + c.leaf(num) + "</p>" +
+      '<p style="margin:3px 0 0;font-size:8px;font-weight:700;color:' + t.MUTED +
+      ';letter-spacing:0;">' + c.leaf("PART") + "</p></section>" +
+      '<section style="flex:1;min-width:0;">' +
+      '<p style="margin:0 0 3px;font-size:22px;font-weight:800;color:' + t.BLUE +
+      ';line-height:1.35;letter-spacing:0;word-break:break-word;">' + c.leaf(title) + "</p>" +
+      '<p style="margin:0;font-size:10px;font-weight:700;color:' + t.BLUE_BRIGHT +
+      ';letter-spacing:0;">' + c.leaf(en.toUpperCase()) + "</p>" +
+      "</section></section></section>";
+  }
+
+  function renderSub(b, c) {
+    var t = c.t, title = b.get(0);
+    return '<section style="margin-top:32px;"><p style="margin:0;font-size:16px;font-weight:800;color:' +
+      t.BLUE + ';letter-spacing:0;line-height:1.8;">' +
+      '<span style="width:4px;height:14px;background:' + t.BLUE +
+      ';border-radius:2px;display:inline-block;vertical-align:-2px;margin-right:9px;"></span>' +
+      c.leaf(title) + "</p></section>";
+  }
+
+  function renderShot(b, c) {
+    var t = c.t, src = b.get(0), caption = b.get(1);
+    var cap = caption ?
+      '<figcaption style="margin-top:9px;font-size:12px;color:' + t.MUTED +
+      ';text-align:center;letter-spacing:0;line-height:1.6;">' + c.leaf(caption) + "</figcaption>" : "";
+    return '<section style="margin-top:24px;"><figure style="margin:0;">' +
+      '<section style="background:#ffffff;border:1px solid ' + t.BORDER_BLUE +
+      ';border-radius:12px;padding:6px;overflow:hidden;box-shadow:0 3px 12px rgba(37,99,235,0.06);">' +
+      '<span leaf=""><img src="' + c.escAttr(src) +
+      '" style="max-width:100%;height:auto;display:block;margin:0 auto;border-radius:8px;" /></span></section>' +
+      cap + "</figure></section>";
+  }
+
+  function renderQuote(b, c) {
+    var t = c.t, who = b.get(0);
+    var tag = who ?
+      '<p style="margin:0 0 6px;font-size:11px;font-weight:800;letter-spacing:0;color:' + t.BLUE +
+      ';">' + c.leaf(who) + "</p>" : "";
+    var paras = b.fields.paras || [];
+    var body = paras.map(function (p, j) {
+      return '<p style="margin:' + (j < paras.length - 1 ? "0 0 7px" : "0") +
+        ';font-size:14px;line-height:1.85;color:' + t.TEXT + ';letter-spacing:0;">' +
+        c.leaf(p) + "</p>";
+    }).join("");
+    return '<section style="margin-top:20px;padding:12px 14px;background:#f8fafc;border-left:3px solid ' +
+      t.BLUE + ';border-radius:0 8px 8px 0;">' + tag + body + "</section>";
+  }
+
+  function renderVideo(b, c) {
+    // 视频只能在后台从素材库引用、是播放框，无法样式化；统一走内核占位块（虚线框 + 替换提示）。
+    return c.videoPlaceholder(b);
+  }
+
+  function renderEnd(b, c) {
+    var t = c.t;
+    return '<section style="margin:26px 4px 22px;display:flex;align-items:center;gap:12px;">' +
+      '<span style="height:1px;background:linear-gradient(90deg,rgba(37,99,235,0),#93c5fd);flex:1;display:inline-block;"><span leaf="">&nbsp;</span></span>' +
+      '<span style="font-size:9px;font-weight:800;letter-spacing:0;color:' + t.BLUE + ';">' +
+      c.leaf("END") + "</span>" +
+      '<span style="height:1px;background:linear-gradient(90deg,#93c5fd,rgba(37,99,235,0));flex:1;display:inline-block;"><span leaf="">&nbsp;</span></span></section>';
+  }
+
+  function renderAuthor(b, c) {
+    var t = c.t;
+    var name = b.get(0), role = b.get(1);
+    var intro = (b.fields.paras || []).join(" ");
+    var avatar = name.trim()[0] || "?";
+    return '<section style="margin:0 4px 24px;padding:18px;background:linear-gradient(135deg,#f0f7ff,#ffffff);border:1px solid ' +
+      t.BORDER_BLUE + ';border-radius:12px;">' +
+      '<section style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">' +
+      '<section style="width:38px;height:38px;border-radius:50%;background:' + t.BLUE +
+      ';text-align:center;line-height:38px;flex-shrink:0;"><span style="font-size:17px;font-weight:900;color:#ffffff;">' +
+      avatar + "</span></section>" +
+      '<section style="min-width:0;"><p style="margin:0 0 2px;font-size:14px;font-weight:900;color:' +
+      t.INK + ';">' + c.leaf(name) + "</p>" +
+      '<p style="margin:0;font-size:9px;color:' + t.MUTED + ';letter-spacing:0;">' +
+      c.leaf(role.toUpperCase()) + "</p></section></section>" +
+      '<p style="margin:0 0 10px;font-size:13px;line-height:1.8;color:' + t.TEXT + ';">' +
+      c.leaf(intro.trim()) + "</p>" +
+      '<p style="font-size:9px;color:' + t.MUTED + ';letter-spacing:0;margin:14px 0 0;text-align:center;">' +
+      c.leaf("THANKS FOR READING") + "</p></section>";
+  }
+
+  function renderCard(b, c) {
+    var t = c.t, f = b.fields;
+    var image = f.image || "";
+    var title = f.heading || (f.paras[0] || "");
+    var paras = f.paras || [];
+    var summary = f.heading ? paras : paras.slice(1);
+    var link = f.link || "";
+    var action = f.links[0] ? f.links[0].text : "阅读更多";
+    var img = image ?
+      '<span leaf=""><img src="' + c.escAttr(image) +
+      '" style="width:100%;height:160px;object-fit:cover;display:block;" /></span>' : "";
+    var sumHtml = summary.map(function (p, j) {
+      return '<p style="margin:' + (j < summary.length - 1 ? "0 0 7px" : "0") +
+        ';font-size:13.5px;line-height:1.8;color:' + t.TEXT + ';">' + c.leaf(p) + "</p>";
+    }).join("");
+    var btn = link ?
+      '<a href="' + link + '" style="display:inline-block;margin-top:10px;background:' + t.BLUE +
+      ';color:#ffffff;font-size:12px;font-weight:700;border-radius:7px;padding:6px 16px;text-decoration:none;">' +
+      c.leaf(action) + "</a>" : "";
+    return '<section style="margin-top:24px;"><section style="background:#ffffff;border:1px solid ' +
+      t.BORDER_BLUE + ';border-radius:12px;overflow:hidden;box-shadow:0 4px 14px rgba(37,99,235,0.06);">' +
+      img + '<section style="padding:16px 17px 17px;">' +
+      '<p style="margin:0 0 8px;font-size:17px;font-weight:900;color:' + t.INK + ';">' +
+      c.leaf(title) + "</p>" + sumHtml + btn + "</section></section></section>";
+  }
+
+  var ROLES = {
+    para: renderPara, issue: renderIssue, part: renderPart, sub: renderSub,
+    shot: renderShot, quote: renderQuote, video: renderVideo, end: renderEnd,
+    author: renderAuthor, card: renderCard
+  };
+
+  global.WX.registerTheme({ THEME: THEME, ROLES: ROLES });
+})(window);
+
+</script>
+<script>
+/* ===== inlined: themes/warm-horizontal.js ===== */
+/* 主题：暖橙横向（warm-horizontal）—— themes/暖橙横向.py 的 JS 移植 */
+(function (global) {
+  "use strict";
+
+  var THEME = {
+    name: "warm-horizontal", label: "暖橙横向", version: "1.0", containers: [],
+    tokens: {
+      BLUE: "#ea8a2e", BLUE_BRIGHT: "#f59e0b", BORDER_BLUE: "#fed7aa",
+      INK: "#7c2d12", BOLD_INK: "rgb(124,45,18)", TEXT: "#78350f", MUTED: "#b45309",
+      PAGE_BG: "#fffaf3",
+      FONT: "-apple-system,system-ui,'PingFang SC','Microsoft YaHei',sans-serif"
+    }
+  };
+
+  function renderPara(b, c) {
+    var t = c.t;
+    var text = (b.bullet ? "• " : "") + (b.fields.text || "");
+    return '<section style="margin-top:20px;"><p style="margin:0;font-size:15px;line-height:1.95;text-align:justify;color:' +
+      t.TEXT + ';letter-spacing:0;">' + c.leaf(text) + "</p></section>";
+  }
+
+  function renderCard(b, c) {
+    var t = c.t, f = b.fields;
+    var title = f.heading || (f.paras[0] || "");
+    var paras = f.paras || [];
+    var summary = f.heading ? paras : paras.slice(1);
+    var sumHtml = summary.map(function (p, j) {
+      return '<p style="margin:' + (j < summary.length - 1 ? "0 0 6px" : "0") +
+        ';font-size:13.5px;line-height:1.8;color:' + t.TEXT + ';">' + c.leaf(p) + "</p>";
+    }).join("");
+    return '<section style="margin-top:24px;"><section style="display:flex;align-items:center;gap:14px;background:#fffaf3;border:1px solid ' +
+      t.BORDER_BLUE + ';border-radius:12px;padding:15px 16px;">' +
+      '<span style="width:40px;height:40px;border-radius:9px;background:#fed7aa;flex-shrink:0;display:flex;align-items:center;justify-content:center;">' +
+      '<span style="width:14px;height:14px;border-radius:4px;background:' + t.BLUE +
+      ';display:inline-block;"></span></span>' +
+      '<span style="flex:1;min-width:0;"><p style="margin:0 0 6px;font-size:16px;font-weight:900;color:' +
+      t.INK + ';">' + c.leaf(title) + "</p>" + sumHtml + "</span></section></section>";
+  }
+
+  var ROLES = { para: renderPara, card: renderCard };
+  global.WX.registerTheme({ THEME: THEME, ROLES: ROLES });
+})(window);
+
+</script>
+<script>
+/* ===== inlined: themes/warm-brown-journal.js ===== */
+/* 主题：暖棕手记（warm-brown-journal）—— themes/暖棕手记.py 的 JS 移植 */
+(function (global) {
+  "use strict";
+  var WX = global.WX;
+  var MARK_RE = /==([^=\n]+)==/g;
+
+  var THEME = {
+    name: "warm-brown-journal", label: "暖棕手记", version: "1.0", containers: [],
+    tokens: {
+      BLUE: "rgb(250,124,33)", BOLD_INK: "rgb(250,124,33)",
+      INK: "#383838", TEXT: "#383838", MUTED: "#888888", PAGE_BG: "#ffffff",
+      FONT: '"PingFang SC NEW",system-ui,-apple-system,"Helvetica Neue","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif',
+      KHAKI: "#6E6248", SLATE: "#2F3840", MAUVE: "#8F7373", DUSTY: "#A89090",
+      PINK: "#E8D5D5", PINK_DEEP: "#CFB7B7", CREAM: "#F4ECD7",
+      TAG1_BG: "#F0E4E4", TAG1_FG: "#6E5353",
+      TITLE_GRAD: "linear-gradient(90deg,#2d2d2d 0%,#6e6248 58%,#a89090 100%)",
+      PART_GRAD: "linear-gradient(90deg,#2f3840 0%,#8f7373 58%,#cfb7b7 100%)",
+      BADGE_GRAD: "linear-gradient(135deg,#8f7373 0%,#cfb7b7 100%)",
+      HIGHLIGHT: "linear-gradient(transparent 62%,#e8d5d5 62%,#e8d5d5 90%,transparent 90%)"
+    }
+  };
+
+  /* 行内：先抽 ==卡其高亮==，其余交给内核 inline（**橙 / 链接） */
+  function warmInline(text, c) {
+    var stash = {};
+    var tmp = text.replace(MARK_RE, function (m, inner) {
+      var k = "\x01" + Object.keys(stash).length + "\x01";
+      stash[k] = inner; return k;
+    });
+    var out = c.inline(tmp);
+    Object.keys(stash).forEach(function (k) {
+      var inner = stash[k];
+      var frag = '<strong style="margin:0;padding:0 2px;font-weight:700;color:' +
+        c.t.KHAKI + ';background-image:' + c.t.HIGHLIGHT +
+        ';background-repeat:no-repeat;">' + WX.esc(inner, false) + "</strong>";
+      out = out.split(k).join(frag);
+    });
+    return out;
+  }
+  function warmLeaf(text, c) {
+    return '<span leaf="">' + warmInline(text, c) + "</span>";
+  }
+
+  function renderPara(b, c) {
+    var text = (b.bullet ? "• " : "") + (b.fields.text || "");
+    return '<section style="margin:0 0 20px;"><p style="margin:0;font-size:15px;line-height:1.85;text-align:justify;color:' +
+      c.t.INK + ';letter-spacing:0;">' + warmLeaf(text, c) + "</p></section>";
+  }
+
+  function pill(txt, bg, fg, margin, c) {
+    if (!txt) return "";
+    return '<span style="display:inline-block;background:' + bg + ';color:' + fg +
+      ';border-radius:980px;padding:4px 10px;font-size:11px;line-height:1.4;margin:' +
+      margin + ';">' + c.leaf(txt) + "</span>";
+  }
+
+  function renderIssue(b, c) {
+    var t = c.t;
+    var tag1 = b.get(0), tag2 = b.get(1), title = b.get(2);
+    var pills = '<section style="margin:0 0 18px;line-height:1;">' +
+      pill(tag1, t.TAG1_BG, t.TAG1_FG, "0 6px 0 0", c) +
+      pill(tag2, t.CREAM, t.KHAKI, "0", c) + "</section>";
+    var h1 = '<h1 style="margin:0 0 26px;font-size:29px;line-height:1.34;font-weight:780;letter-spacing:-0.02em;color:' +
+      t.INK + ';background-image:' + t.TITLE_GRAD + ';background-repeat:no-repeat;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;">' +
+      c.leaf(title) + "</h1>";
+    var dot = '<section style="width:64px;height:4px;margin:0 0 26px;border-radius:980px;background-color:' +
+      t.PINK_DEEP + ';"></section>';
+    return '<section style="margin:0 10px 34px;padding:26px 10px 4px;">' +
+      pills + h1 + dot + "</section>";
+  }
+
+  function renderPart(b, c) {
+    var t = c.t;
+    var num = b.get(0), title = b.get(1), en = b.get(2);
+    var badge = '<span style="display:inline-block;background-color:' + t.DUSTY +
+      ';background-image:' + t.BADGE_GRAD + ';color:' + t.CREAM +
+      ';font-size:18px;font-weight:900;padding:4px 14px;border-radius:6px;margin-right:14px;line-height:1.3;">' +
+      c.leaf(num) + "</span>";
+    var head = '<span style="min-width:0;">' +
+      '<p style="margin:0 0 2px;font-size:10px;font-weight:700;letter-spacing:0;color:' + t.KHAKI + ';">' +
+      c.leaf(en.toUpperCase()) + "</p>" +
+      '<span style="display:block;font-size:18px;font-weight:800;line-height:1.5;color:' + t.SLATE +
+      ';background-image:' + t.PART_GRAD + ';background-repeat:no-repeat;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;">' +
+      c.leaf(title) + "</span></span>";
+    return '<section style="display:flex;align-items:center;margin:18px 0 20px;padding-bottom:14px;border-bottom:3px solid ' +
+      t.PINK_DEEP + ';">' + badge + head + "</section>";
+  }
+
+  function renderShot(b, c) {
+    var t = c.t;
+    var src = b.get(0), caption = b.get(1);
+    var rounded = ["1", "true", "yes", "圆角"].indexOf(b.kw.round) >= 0;
+    var wrapM, imgStyle;
+    if (rounded) {
+      wrapM = "28px 0 30px";
+      imgStyle = "max-width:100%;height:auto;display:block;margin:0 auto;border-radius:12px;";
+    } else {
+      wrapM = "0 0 8px";
+      imgStyle = "max-width:100%;height:auto;display:block;margin:0 auto;";
+    }
+    var fig = '<section style="text-align:center;margin:' + wrapM + ';"><span leaf="">' +
+      '<img src="' + c.escAttr(src) + '" style="' + imgStyle + '" /></span></section>';
+    var cap = caption ?
+      '<p style="margin:10px 0 20px;font-size:11px;line-height:1.65;text-align:center;color:' +
+      t.MUTED + ';">' + c.leaf(caption) + "</p>" : "";
+    return fig + cap;
+  }
+
+  function renderEnd(b, c) {
+    var thanks = b.get(0) || "真诚感谢你的每一个❤️和👍";
+    var theEnd = '<section style="text-align:center;margin:28px 0 16px;"><p style="margin:0;font-size:16px;letter-spacing:0;">' +
+      c.leaf("—The End—") + "</p></section>";
+    var thanksHtml = '<p style="margin:0 0 18px;font-size:14px;line-height:1.85;text-align:center;color:rgb(102,102,102);">' +
+      c.leaf(thanks) + "</p>";
+    return theEnd + thanksHtml;
+  }
+
+  var ROLES = {
+    para: renderPara, issue: renderIssue, part: renderPart,
+    shot: renderShot, end: renderEnd
+  };
+  global.WX.registerTheme({ THEME: THEME, ROLES: ROLES });
+})(window);
+
+</script>
+<script>
+/* ===== inlined: themes/green-tech.js ===== */
+/* 主题：翠绿科技（green-tech）—— themes/翠绿科技.py 的 JS 移植 */
+(function (global) {
+  "use strict";
+  var WX = global.WX;
+
+  var THEME = {
+    name: "green-tech", label: "翠绿科技", version: "1.0", containers: ["step"],
+    tokens: {
+      BLUE: "#059669", BOLD_INK: "#059669",
+      INK: "#111827", TEXT: "#374151", MUTED: "#9ca3af", LIGHT: "#d1d5db",
+      PAGE_BG: "#ffffff",
+      FONT: '-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
+      MONO: '"SF Mono",Consolas,Monaco,monospace',
+      AMBER: "#f59e0b", GREEN_BG: "#ecfdf5", GREEN_BG2: "#f0fdf4",
+      AMBER_BG: "#fffbeb", CODE_BG: "#f3f4f6",
+      TERM_BG: "#1e293b", TERM_HEAD: "#0f172a", TERM_FG: "#e2e8f0",
+      HL_GREEN: "#a7f3d0", HL_YELLOW: "#fde68a", HL_PINK: "#fecaca",
+      BORDER_GRAY: "#e5e7eb"
+    }
+  };
+
+  /* 行内（主题本地扩展） */
+  function chip(inner, bg, weight, c) {
+    return '<code style="font-family:' + c.t.MONO + ';font-size:13px;color:#1f2937;background:' +
+      bg + ';font-weight:' + weight + ';border-radius:4px;padding:2px 6px;">' + inner + '</code>';
+  }
+
+  function greenInline(text, c) {
+    text = WX.esc(text, false);
+    var stash = {};
+    function keep(frag) {
+      var k = "\x01" + Object.keys(stash).length + "\x01";
+      stash[k] = frag; return k;
+    }
+    text = text.replace(/`([^`\n]+)`/g, function (m, inner) {
+      return keep(chip(inner, "#f3f4f6", "600", c));
+    });
+    text = text.replace(/@@([^@\n]+)@@/g, function (m, inner) {
+      return keep(chip(inner, "#fde68a", "700", c));
+    });
+    text = text.replace(/==([^=\n]+)==/g, function (m, inner) {
+      return keep('<strong style="color:' + c.t.BLUE + ';font-weight:bold;border-bottom:3px solid ' +
+        c.t.HL_YELLOW + ';">' + inner + '</strong>');
+    });
+    text = text.replace(/~~([^~\n]+)~~/g, function (m, inner) {
+      return keep('<span style="border-bottom:2px solid ' + c.t.HL_PINK + ';">' + inner + '</span>');
+    });
+    text = text.replace(/\+\+([^+\n]+)\+\+/g, function (m, inner) {
+      return keep('<span style="font-weight:600;border-bottom:2px solid ' + c.t.HL_GREEN + ';">' +
+        inner + '</span>');
+    });
+    text = text.replace(/\*\*([^*]+)\*\*/g, function (m, inner) {
+      return keep('<strong style="color:' + c.t.BLUE + ';">' + inner + '</strong>');
+    });
+    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, function (m, inner, href) {
+      return keep('<a href="' + href + '" style="color:' + c.t.BLUE +
+        ';text-decoration:underline;">' + inner + '</a>');
+    });
+    Object.keys(stash).forEach(function (k) {
+      text = text.split(k).join(stash[k]);
+    });
+    return text;
+  }
+
+  function greenLeaf(text, c) {
+    return '<span leaf="">' + greenInline(text, c) + "</span>";
+  }
+
+  function renderPara(b, c) {
+    var text = (b.bullet ? "• " : "") + (b.fields.text || "");
+    return '<section style="margin:0 0 8px;"><p style="margin:0;font-size:14px;line-height:1.9;text-align:justify;color:' +
+      c.t.TEXT + ';letter-spacing:0;">' + greenLeaf(text, c) + "</p></section>";
+  }
+
+  function renderIssue(b, c) {
+    var t = c.t;
+    var tag = b.get(0), date = b.get(1), small = b.get(2);
+    var line1 = b.get(3), line2 = b.get(4), subtitle = b.get(5);
+    var banner = b.get(6), pill1 = b.get(7), pill2 = b.get(8);
+
+    var top =
+      '<section style="display:flex;align-items:center;gap:10px;margin-bottom:18px;">' +
+      '<span style="font-size:11px;color:' + t.BLUE + ';font-weight:700;">' + greenLeaf(tag, c) + '</span>' +
+      '<span style="height:1px;flex:1;background:linear-gradient(to right,rgba(5,150,105,0.6),rgba(5,150,105,0));"></span>' +
+      '<span style="font-size:10px;color:' + t.LIGHT + ';font-weight:600;">' + greenLeaf(date, c) + '</span></section>';
+    var eyebrow = small ?
+      '<p style="margin:0 0 6px;font-size:15px;color:' + t.LIGHT + ';">' + greenLeaf(small, c) + '</p>' : "";
+    var h =
+      '<p style="margin:0;font-size:24px;color:' + t.INK + ';font-weight:900;line-height:1.05;">' +
+      greenInline(line1, c) + '</p>' +
+      '<p style="margin:0 0 16px;font-size:24px;color:' + t.BLUE + ';font-weight:900;line-height:1.05;">' +
+      greenInline(line2, c) + '</p>';
+    var bar = '<section style="width:48px;height:3px;border-radius:2px;margin-bottom:16px;background:linear-gradient(to right,rgb(5,150,105),rgba(5,150,105,0));"></section>';
+    var sub = subtitle ?
+      '<p style="margin:0 0 18px;font-size:13px;color:' + t.MUTED + ';line-height:1.7;">' +
+      greenLeaf(subtitle, c) + '</p>' : "";
+    function modelPill(x) {
+      return '<span style="font-size:8px;color:#ffffff;background:rgba(255,255,255,0.2);font-weight:600;border-radius:3px;padding:1px 6px;margin-right:6px;">' +
+        greenLeaf(x, c) + '</span>';
+    }
+    var bannerH =
+      '<section style="display:flex;align-items:center;gap:8px;padding:12px 0;margin-top:4px;">' +
+      '<span style="font-size:12px;color:rgba(255,255,255,0.9);font-weight:600;margin-right:6px;">' +
+      greenLeaf(banner, c) + '</span>' + modelPill(pill1) + modelPill(pill2) + '</section>';
+    var bannerWrap = '<section style="background:linear-gradient(135deg,#059669,#10b981);border-radius:10px;padding:0 20px;">' +
+      bannerH + '</section>';
+
+    return '<section style="width:677px;max-width:100%;box-sizing:border-box;background:#ffffff;border-radius:20px;margin:0 0 32px;padding:32px 28px 28px;">' +
+      top + eyebrow + h + bar + sub + bannerWrap + '</section>';
+  }
+
+  function tocCard(num, title, sub, active) {
+    if (active) {
+      return '<section style="display:inline-block;white-space:normal;vertical-align:top;width:110px;background:linear-gradient(135deg,#059669,#10b981);border-radius:12px;padding:12px;margin-right:8px;">' +
+        '<p style="margin:0 0 5px;font-size:9px;color:rgba(255,255,255,0.7);font-weight:700;letter-spacing:1px;">PART ' + num + '</p>' +
+        '<p style="margin:0 0 3px;font-size:13px;color:#ffffff;font-weight:800;">' + title + '</p>' +
+        '<p style="margin:0;font-size:10px;color:rgba(255,255,255,0.7);">' + sub + '</p></section>';
+    }
+    return '<section style="display:inline-block;white-space:normal;vertical-align:top;width:110px;background:#ffffff;border-radius:12px;padding:12px;margin-right:8px;">' +
+      '<p style="margin:0 0 5px;font-size:9px;color:#9ca3af;font-weight:700;letter-spacing:1px;">PART ' + num + '</p>' +
+      '<p style="margin:0 0 3px;font-size:13px;color:#111827;font-weight:800;">' + title + '</p>' +
+      '<p style="margin:0;font-size:10px;color:#9ca3af;">' + sub + '</p></section>';
+  }
+  function renderToc(b, c) {
+    var entries = [];
+    b.bodyLines.forEach(function (ln) {
+      if (!ln.trim()) return;
+      var cells = ln.split("|").map(function (x) { return x.trim(); });
+      if (cells.length >= 2) entries.push([cells[0], cells[1], cells[2] || ""]);
+    });
+    var nParts = entries.filter(function (e) { return e[0] !== "///"; }).length;
+    var head = '<section style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">' +
+      '<p style="margin:0;font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:2px;">📦 ' + nParts + ' Parts + Conclusion</p>' +
+      '<p style="margin:0;font-size:10px;color:#9ca3af;">👉 滑动</p></section>';
+    var cards = "";
+    entries.forEach(function (e, i) {
+      cards += tocCard(e[0], e[1], e[2], i === 0);
+    });
+    return '<section style="margin:0 20px 32px;">' + head +
+      '<section style="overflow-x:auto;white-space:nowrap;padding-bottom:8px;">' + cards + '</section></section>';
+  }
+
+  function renderPart(b, c) {
+    var t = c.t;
+    var num = b.get(0), title = b.get(1), en = b.get(2);
+    var small = num === "///" ? "LAST" : "PART";
+    return '<section style="padding:0 20px;margin:24px 0 12px;">' +
+      '<section style="display:flex;align-items:center;gap:16px;">' +
+      '<section style="text-align:center;flex-shrink:0;">' +
+      '<p style="margin:0;font-size:28px;color:' + t.BLUE + ';font-weight:900;line-height:1;">' +
+      greenLeaf(num, c) + '</p>' +
+      '<p style="margin:2px 0 0;font-size:8px;color:' + t.LIGHT + ';font-weight:700;">' + small + '</p></section>' +
+      '<span style="width:1px;height:36px;background:' + t.BORDER_GRAY + ';"></span>' +
+      '<section style="min-width:0;">' +
+      '<p style="margin:0 0 1px;font-size:17px;color:' + t.INK + ';font-weight:900;">' +
+      greenLeaf(title, c) + '</p>' +
+      '<p style="margin:0;font-size:11px;color:' + t.MUTED + ';font-weight:600;">' +
+      greenLeaf(en.toUpperCase(), c) + '</p>' +
+      '</section></section></section>';
+  }
+
+  function renderSub(b, c) {
+    return '<section style="margin:28px 0 14px;"><p style="margin:0;font-size:16px;color:#1c1917;font-weight:800;line-height:1.5;padding-left:10px;border-left:4px solid ' +
+      c.t.BLUE + ';">' + greenLeaf(b.get(0), c) + '</p></section>';
+  }
+
+  function renderShot(b, c) {
+    var t = c.t;
+    var src = b.get(0), caption = b.get(1);
+    var img = '<section style="text-align:center;margin:8px 0;"><span leaf="">' +
+      '<img src="' + c.escAttr(src) +
+      '" style="max-width:100%;height:auto;border-radius:8px;display:block;margin:0 auto;" /></span></section>';
+    var cap = caption ?
+      '<p style="margin:6px 0 12px;font-size:12px;color:' + t.MUTED +
+      ';text-align:center;line-height:1.6;">' + greenLeaf(caption, c) + '</p>' : "";
+    return img + cap;
+  }
+
+  function callout(b, c, bg, border, labelBg, labelFg) {
+    var t = c.t;
+    var title = b.get(0);
+    var paras = b.fields.paras || [];
+    var head = title ?
+      '<p style="margin:0 0 8px;"><span style="display:inline-block;font-size:11px;color:' + labelFg +
+      ';background:' + labelBg + ';font-weight:700;border-radius:4px;padding:2px 10px;">' +
+      greenLeaf(title, c) + '</span></p>' : "";
+    var body = "";
+    paras.forEach(function (p) {
+      body += '<p style="margin:0 0 6px;font-size:14px;color:' + t.TEXT + ';line-height:1.8;">' +
+        greenLeaf(p, c) + '</p>';
+    });
+    return '<section style="background:' + bg + ';border-radius:0 8px 8px 0;padding:14px 18px;margin:14px 0;border-left:4px solid ' +
+      border + ';">' + head + body + '</section>';
+  }
+  function renderNote(b, c) {
+    return callout(b, c, c.t.GREEN_BG, c.t.BLUE, c.t.BLUE, "#ffffff");
+  }
+  function renderTip(b, c) { return renderNote(b, c); }
+  function renderWarning(b, c) {
+    return callout(b, c, c.t.AMBER_BG, c.t.AMBER, c.t.AMBER, "#ffffff");
+  }
+
+  function renderStep(b, c) {
+    var t = c.t;
+    var num = b.get(0), title = b.get(1);
+    var paras = b.fields.paras || [];
+    var body = "";
+    paras.forEach(function (p) {
+      body += '<p style="margin:6px 0 0;font-size:14px;color:' + t.TEXT + ';line-height:1.8;">' +
+        greenLeaf(p, c) + '</p>';
+    });
+    return '<section style="margin:18px 0 6px;"><section style="display:flex;align-items:center;gap:10px;">' +
+      '<span style="display:inline-block;font-size:10px;color:#ffffff;background:' + t.INK +
+      ';font-weight:700;border-radius:12px;padding:2px 8px;">STEP ' + greenLeaf(num, c) + '</span>' +
+      '<h4 style="margin:0;font-size:15px;color:' + t.INK + ';font-weight:800;">' +
+      greenLeaf(title, c) + '</h4></section>' + body + '</section>';
+  }
+
+  function renderCode(b, c) {
+    var t = c.t;
+    var lang = b.kw.lang || ((b.pos.length) ? b.get(0) : "") || "bash";
+    var lines = b.bodyLines;
+    function dot(color, mr) {
+      return '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' +
+        color + ';margin-right:' + mr + ';"></span>';
+    }
+    var dots = dot("#ff5f56", "6px") + dot("#ffbd2e", "6px") + dot("#27c93f", "8px");
+    var head = '<section style="display:flex;align-items:center;background:' + t.TERM_HEAD +
+      ';padding:9px 14px;">' + dots + '<span style="font-size:12px;color:#64748b;letter-spacing:1px;">' +
+      greenLeaf(lang, c) + '</span></section>';
+    var code = "";
+    lines.forEach(function (ln) {
+      code += '<p style="margin:0;font-size:13px;color:' + t.TERM_FG +
+        ';line-height:1.6;font-family:' + t.MONO + ';white-space:pre;">' + WX.esc(ln, false) + '</p>';
+    });
+    return '<section style="background:' + t.TERM_BG + ';border-radius:8px;margin:0 0 24px;overflow:hidden;">' +
+      head + '<section style="padding:11px 14px;overflow-x:auto;">' + code + '</section></section>';
+  }
+
+  function splitRow(line) {
+    return line.trim().replace(/^\|+/, "").replace(/\|+$/, "").split("|").map(function (x) {
+      return x.trim();
+    });
+  }
+  function renderTable(b, c) {
+    var t = c.t;
+    var rows = b.bodyLines.filter(function (ln) { return ln.trim(); });
+    if (!rows.length) return "";
+    var header = splitRow(rows[0]);
+    var bodyRows = rows.slice(1).filter(function (r) { return !/^[\s|:\-]+$/.test(r); });
+    var th = "";
+    header.forEach(function (h) {
+      th += '<th style="color:#ffffff;background:' + t.BLUE + ';font-weight:700;text-align:left;padding:8px 10px;border-bottom:1px solid ' +
+        t.BLUE + ';">' + greenLeaf(h, c) + '</th>';
+    });
+    var trs = "";
+    bodyRows.forEach(function (r) {
+      var cells = splitRow(r), tds = "";
+      cells.forEach(function (cell, ci) {
+        var firstBg = ci === 0 ? ('background:' + t.GREEN_BG2 + ';') : "";
+        tds += '<td style="padding:8px 10px;border-bottom:1px solid ' + t.BORDER_GRAY + ';' + firstBg + '">' +
+          greenLeaf(cell, c) + '</td>';
+      });
+      trs += "<tr>" + tds + "</tr>";
+    });
+    return '<section style="margin:14px 0;"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr>' +
+      th + '</tr></thead><tbody>' + trs + '</tbody></table></section>';
+  }
+
+  function renderCta(b, c) {
+    var t = c.t;
+    var lead = (b.fields.paras || [""])[0];
+    var items = [["👍", "点赞", "#ffffff", "#4b5563"],
+                 ["👀", "在看", "#ffffff", "#4b5563"],
+                 ["➦", "转发", t.GREEN_BG, t.BLUE]];
+    var cols = "";
+    items.forEach(function (it) {
+      var icon = it[0], label = it[1], bg = it[2], fg = it[3];
+      cols += '<section style="flex:1;text-align:center;"><section style="display:flex;width:40px;height:40px;background:' +
+        bg + ';border-radius:12px;margin:0 auto 6px;align-items:center;justify-content:center;font-size:18px;color:' +
+        fg + ';">' + icon + '</section><span style="font-size:10px;font-weight:600;color:' + fg + ';">' +
+        label + '</span></section>';
+    });
+    var leadH = lead ?
+      '<p style="margin:0 0 18px;font-size:13px;color:' + t.INK + ';font-weight:bold;line-height:1.6;">' +
+      greenLeaf(lead, c) + '</p>' : "";
+    return '<section style="background:radial-gradient(circle,#f9fafb 0%,#f1f5f9 100%);text-align:center;border-radius:16px;margin:24px 0;padding:32px 20px;">' +
+      leadH + '<section style="display:flex;gap:12px;">' + cols + '</section>' +
+      '<p style="margin:18px 0 0;font-size:10px;color:' + t.MUTED + ';">' +
+      greenLeaf("THANKS FOR READING", c) + '</p></section>';
+  }
+
+  var ROLES = {
+    para: renderPara, issue: renderIssue, toc: renderToc, part: renderPart, sub: renderSub,
+    shot: renderShot, note: renderNote, tip: renderTip, warning: renderWarning,
+    step: renderStep, code: renderCode, table: renderTable, cta: renderCta
+  };
+  global.WX.registerTheme({ THEME: THEME, ROLES: ROLES });
+})(window);
+
+</script>
+<script>
+/* ===== inlined: samples.js ===== */
+/* 自动生成，请勿手改；源：tools/build_web_samples.py */
+window.WX_SAMPLES = [
+ {
+  "label": "共享示例（全模块）",
+  "path": "examples\\demo.md",
+  "md": ":::issue 【请改成你的公众号名称】|2026.10\nhttps://placehold.co/900x420/2563eb/ffffff?text=Cover\nEDITOR'S NOTE · 本期实测\n\n我用一个下午，让 AI 独立完成了一份原本要花三天的运营方案，这篇把全过程拆开给你看。\n:::\n\n最近总有人问我：AI 到底能不能把一件需要来回折腾的活，从头干到尾，而不是只帮你起个草？\n\n口说无凭，我挑了个最琐碎的场景——给一家小店做节日运营全案，从查数据、定价格、做表格，到最后出 Word、Excel、PPT，整套丢给 AI。\n\n这套方案要包含的东西不少：\n\n- 行情要查官方数据，定价要有依据；\n- 预算要算清楚，还不能超；\n- 最后要整理成能直接拿去汇报的文档和表格。\n\n:::part 01|最麻烦的反而不是写方案|DATA COLLECTION\n\n我做的第一件事，不是让 AI 写方案，而是先把数据找齐。\n\n网上随手搜来的二手数据没底气，我直接让它去官方数据平台一项项筛：酒店价格、入住率，分时间、分档次地查。\n\n:::sub 先读图，再动手\n\n遇到信息密度高的页面，它没有急着下结论，而是先把每个选项、每个标注读出来，再开始整理。\n\n:::shot https://placehold.co/800x520/eef2ff/2563eb?text=Step+1|它正在逐项筛选官方平台的数据\n\n查完数据，它把原始数据、清洗结果和透视表一起整理好，还顺手给了一版分析。\n\n:::quote 我的指令\n帮我把官方平台上的价格和入住率，按时间和档次整理成表，并给出定价建议。\n:::\n\n:::card\n![延伸阅读封面](https://placehold.co/800x400/fed7aa/ea8a2e?text=Related)\n### 延伸阅读：上一期实测\n上一期我用同一套方法，把一份竞品分析从头做到尾，踩坑都在这篇里。\n[阅读全文](https://example.com/related)\n:::\n\n:::part 02|数据有了，才是重头戏|OPERATING PLAN\n\n把数据和需求一起交给它，最后出来的是一整套交付物：Word 方案、Excel 预算表、PPT 汇报稿。\n\n:::shot https://placehold.co/800x520/eef2ff/2563eb?text=Deliverables\n\n更关键的是，客户中途改需求时，价格、预算、汇报稿能一起跟着变，不用在几个文件之间来回倒。\n\n:::video 最终效果：一整套可交互的交付物|看完前面的过程，再看成品感受不一样\n\n:::part 03|做完后我对 AI 办公的理解|REFLECTION\n\n这次最大的感受是：AI 真正省时间的地方，不是第一次帮你生成文件，而是来回改的时候它能不能接得住。\n\n它不是替我做决定，而是**尽量把做决定之外的活都做掉**；数据靠不靠谱、价格合不合理，始终由我判断。\n\n感兴趣的可以去[作者主页](https://example.com)看更多实测。\n\n:::end\n\n:::author 作者名|AI PRACTITIONER\n我是作者名，分享实测的 AI 工具、AI 应用和工作流，主打手把手教学。\n:::\n"
+ },
+ {
+  "label": "蓝白杂志 · 主题示例",
+  "path": "examples\\demo-蓝白杂志.md",
+  "md": "<!--\n  主题示例 demo · 蓝白杂志（blue-editorial）\n  本文件由 tools/scaffold_demo.py 依据主题源码自动生成，展示该主题的全部模块与写法。\n  用法：在工作台打开本文件，对照下方 HTML 注释里的语法，替换占位内容；图片必须是 https://。\n  本主题未实现、走内核 fallback 的 role：无。跨主题降级示例见 examples/demo.md。\n-->\n\n<!-- 写法：:::issue 栏目名|日期（容器，内容另起行，最后用单独一行 ::: 闭合）。\n     没提供栏目名就用占位【请改成你的公众号名称】，发布前替换，不要编造。 -->\n:::issue 【请改成你的公众号名称】|【日期】\n![刊头封面](https://placehold.co/600x400?text=Demo)\nEDITOR'S NOTE\n这是刊头导语演示，可替换成本期要点。\n:::\n\n<!-- 写法：:::part 01|章节中文标题|ENGLISH LABEL（单行，无需闭合） -->\n:::part 01|章节中文标题|ENGLISH LABEL\n\n<!-- 写法：:::sub 小标题（单行，无需闭合） -->\n:::sub 小标题\n\n<!-- 写法：正文直接写；**加粗**、[文字](https链接)；列表用 - 开头 -->\n这是正文演示段落，包含**加粗强调**，还有[链接](https://example.com)。\n\n<!-- 写法：列表项以 - 开头（• 由内核自动处理） -->\n- 列表项一，可含**加粗**\n- 列表项二\n\n<!-- 写法：:::shot https://placehold.co/600x400?text=Demo|图注文字（单行，无需闭合） -->\n:::shot https://placehold.co/600x400?text=Demo|图注文字\n\n<!-- 写法：:::quote 出处 / 作者（容器，内容另起行，最后用单独一行 ::: 闭合） -->\n:::quote 出处 / 作者\n这是「quote」模块的正文演示段落，可替换成你的内容。\n:::\n\n<!-- 写法：:::video 视频标题|视频说明（后台手动替换成视频）（单行，无需闭合） -->\n:::video 视频标题|视频说明（后台手动替换成视频）\n\n<!-- 写法：:::card（容器，内容另起行，最后用单独一行 ::: 闭合） -->\n:::card\n![卡片封面](https://placehold.co/600x400?text=Demo)\n## 卡片标题占位\n这是卡片摘要演示文字，替换成你的简介内容。\n[阅读原文](https://example.com)\n:::\n\n<!-- 写法：:::author 作者名|作者身份 / 头衔（容器，内容另起行，最后用单独一行 ::: 闭合） -->\n:::author 作者名|作者身份 / 头衔\n这是「author」模块的正文演示段落，可替换成你的内容。\n:::\n\n<!-- 写法：:::end（单行，无需闭合） -->\n:::end\n"
+ },
+ {
+  "label": "暖橙横向 · 主题示例",
+  "path": "examples\\demo-暖橙横向.md",
+  "md": "<!--\n  主题示例 demo · 暖橙横向（warm-horizontal）\n  本文件由 tools/scaffold_demo.py 依据主题源码自动生成，展示该主题的全部模块与写法。\n  用法：在工作台打开本文件，对照下方 HTML 注释里的语法，替换占位内容；图片必须是 https://。\n  本主题未实现、走内核 fallback 的 role：issue、part、sub、shot、quote、video、end、author。跨主题降级示例见 examples/demo.md。\n-->\n\n<!-- 写法：正文直接写；**加粗**、[文字](https链接)；列表用 - 开头 -->\n这是正文演示段落，包含**加粗强调**，还有[链接](https://example.com)。\n\n<!-- 写法：列表项以 - 开头（• 由内核自动处理） -->\n- 列表项一，可含**加粗**\n- 列表项二\n\n<!-- 写法：:::card（容器，内容另起行，最后用单独一行 ::: 闭合） -->\n:::card\n## 卡片标题占位\n这是卡片摘要演示文字，替换成你的简介内容。\n:::\n"
+ },
+ {
+  "label": "暖棕手记 · 主题示例",
+  "path": "examples\\demo-暖棕手记.md",
+  "md": "<!--\n  主题示例 demo · 暖棕手记（warm-brown-journal）\n  本文件由 tools/scaffold_demo.py 依据主题源码自动生成，展示该主题的全部模块与写法。\n  用法：在工作台打开本文件，对照下方 HTML 注释里的语法，替换占位内容；图片必须是 https://。\n  本主题未实现、走内核 fallback 的 role：sub、quote、video、author、card。跨主题降级示例见 examples/demo.md。\n-->\n\n<!-- 写法：:::issue 主标签|副标签|文章标题（容器，本主题此模块不使用 body，直接用单独一行 ::: 闭合）。\n     主标签是公众号/栏目名，没提供就写【请改成你的公众号名称】，发布前替换。 -->\n:::issue 【请改成你的公众号名称】|副标签|文章标题\n:::\n\n<!-- 写法：:::part 01|章节中文标题|ENGLISH LABEL（单行，无需闭合） -->\n:::part 01|章节中文标题|ENGLISH LABEL\n\n<!-- 写法：正文直接写；**加粗**、[文字](https链接)；主题本地标记 ==；列表用 - 开头 -->\n这是正文演示段落，包含**加粗强调**，还有[链接](https://example.com)，还有==行内标记==。\n\n<!-- 写法：列表项以 - 开头（• 由内核自动处理） -->\n- 列表项一，可含**加粗**\n- 列表项二\n\n<!-- 写法：:::shot https://placehold.co/600x400?text=Demo|图注文字（单行，无需闭合） -->\n:::shot https://placehold.co/600x400?text=Demo|图注文字\n\n<!-- 变体写法：:::shot https://placehold.co/600x400?text=Demo|图注文字|round=1（开关 round 打开后的效果） -->\n:::shot https://placehold.co/600x400?text=Demo|图注文字|round=1\n\n<!-- 写法：:::end 一句致谢（可省略）（单行，无需闭合） -->\n:::end 一句致谢（可省略）\n"
+ },
+ {
+  "label": "翠绿科技 · 主题示例",
+  "path": "examples\\demo-翠绿科技.md",
+  "md": "<!--\n============================================================\n翠绿科技（green-tech）· 主题示例 Demo\n本文逐一演示该主题的全部模块与行内标记；正文均为占位演示文字，可直接替换成你的内容。\n行内标记速查：\n  **词**   绿色加粗（强调）\n  ==词==   绿色加粗 + 黄色 3px 下划线（关键术语）\n  ~~词~~   粉色 2px 下划线（反例 / 风险）\n  ++词++   浅绿 2px 下划线（模型名 / 版本 / 参数）\n  `词`     灰色代码胶囊      @@词@@   琥珀代码胶囊（参考入口）\n  [文字](https://...) 绿色下划线链接\n模块：\n  :::issue 标签|日期|眉题|大标题行1|大标题行2|副说明|横幅文字|胶囊1|胶囊2（容器，空 body，下一行写 :::）\n  :::toc（容器，每行 编号|标题|副标，首张自动激活）\n  :::part 编号|中文标题|英文标签\n  :::sub 小标题\n  :::shot 图片|图注\n  :::note 标题 / :::tip 标题（绿色提示框）   :::warning 标题（琥珀警示框）\n  :::step 编号|标题（容器，可含一行说明，勿嵌套 code）\n  :::code lang=bash（深色终端，逐行原样）\n  :::table（竖线表格）   :::cta（三连卡片）\n============================================================\n-->\n\n<!-- 刊头大封面卡：9 个位置槽，大标题行内可再套行内标记；标签栏是公众号名称，没给就留占位 -->\n:::issue 【请改成你的公众号名称】|【日期】|技术教程 · 演示刊头|一个**示例项目**，|从 0 到 1 跑通全流程|这里是副说明，一句话概括本期演示覆盖了哪些步骤、适合谁看。|示例项目 · 本地可运行 · 全程演示|组件一|组件二\n:::\n\n<!-- 横向滑动目录：每行 编号|标题|副标；首张自动为绿色激活态；末尾用 /// 表示“最后” -->\n:::toc\n01|先搞懂概念|关键术语\n02|能力清单|它能做什么\n03|实测对比|数据与差异\n04|本地跑通|三步上手\n05|接入业务|调用示例\n06|选型避坑|限制与许可\n///|写在最后|先跑通再谈\n:::\n\n<!-- 章节标题：编号 | 中文标题 | 英文标签 -->\n:::part 01|先分清：两种常见做法|CONCEPT A VS B\n\n这一段是正文演示，用来展示行内标记。常见的误区是~~边出边改~~：先蹦出一串结果，后面又把自己推翻，下游很容易出错。\n\n我们要强调的是==append-only==这类关键术语：只追加、不回改。稳定结果一旦提交，后面再来数据也不会推翻前面的结论，用一句话概括就是**落子无悔**。\n\n<!-- 小标题：绿色左竖条 -->\n:::sub 一张表看懂差异\n\n<!-- 竖线表格：首行为表头，第二行分隔线可省略；首列自动浅绿底 -->\n:::table\n| 维度 | 做法 A（可回改） | 做法 B（只追加） |\n| --- | --- | --- |\n| 已出结果 | 可能被改写 | 永久提交 |\n| 观感 | 容易闪烁 | 更稳定 |\n| 下游消费 | 动作可能被推翻 | 可立刻使用 |\n| 接入成本 | 需额外处理 | 链路更简单 |\n:::\n\n<!-- 琥珀警示框：首段位置槽=标题，其后为正文 -->\n:::warning 读表注意\n带 ※ 的项目只是演示数据，不代表真实结论；正式对比请以你自己的实测为准，这里仅展示表格与警示框的写法。\n:::\n\n<!-- 绿色提示框 tip（note / tip 同为绿色，tip 偏“推荐做法”，warning 为琥珀） -->\n:::tip 怎么快速判断\n盯结果 10 秒：如果已经出现的内容又被「回头改掉」，就是会回改的做法；只追加、不回改的才是稳定做法。\n:::\n\n:::part 04|本地三步跑通|QUICK START\n\n演示环境建议用隔离的虚拟环境，Python 版本以++3.12++为例（3.10+ 一般也可用）。想少踩依赖兼容坑，直接用 **Docker** 更省事，镜像名可写成 `your-name/demo:latest` 这样的占位。\n\n<!-- 步骤：编号 | 标题；容器内可放一行说明，代码块请放在 ::: 之后，不要嵌套 -->\n:::step 01|拉代码、建环境\n先克隆示例仓库，再建一个干净的虚拟环境，避免污染本机依赖。\n:::\n\n<!-- 深色终端代码块：lang 指定语言，正文逐行原样保留 -->\n:::code lang=bash\ngit clone https://example.com/your-name/demo-project.git\ncd demo-project\nconda create -n demo python=3.12 -y\nconda activate demo\npip install -e .\n:::\n\n:::step 02|准备输入，跑通一次\n准备一个示例输入文件，程序内部会自动做格式校验；下面的路径都换成你自己的。\n:::\n\n:::code lang=bash\n./run_example.sh /path/to/input.wav \\\n  --model_path /path/to/demo-model \\\n  --mode stream \\\n  --language Chinese\n:::\n\n:::step 03|监听输出，确认稳定\n监听流式输出，确认已提交的结果不再回改，再接你自己的业务逻辑。\n:::\n\n<!-- 居中截图：图片 https 地址 | 图注（可留空）；正式使用时换成你的截图，必须 https -->\n:::shot https://placehold.co/800x520/f0fdf4/059669?text=Screenshot|运行成功后的终端输出（占位图，替换成你的截图）\n\n<!-- 绿色提示框 -->\n:::note 一句话小结\n先把基础流程跑稳，再逐步叠加更多功能，顺序别反。\n:::\n\n:::part ///|写在最后|WRAP UP\n\n这段结尾演示**加粗**、行内代码 `run_example.sh`、琥珀胶囊入口 @@demo-project@@、@@参考文档@@，以及一个绿色下划线链接，完整写法可以看[官方文档占位](https://example.com)。\n\n建议你今晚就干一件事：把示例跑起来，确认能稳定输出，再考虑接入完整链路。别一上来就上生产。\n\n我是【作者名】，热衷于分享技术实践与干货。你更想拿它做什么？评论区聊。\n\n<!-- 三连卡片：正文为引导语；三个按钮为简化样式（原文为 SVG 图标） -->\n:::cta\n既然看到这里了，如果觉得有用，随手点个赞、在看、转发三连吧。\n:::\n"
+ }
+];
+
+</script>
+<script>
+(function () {
+  var editor = document.getElementById("editor");
+  var preview = document.getElementById("preview");
+  var statusEl = document.getElementById("status");
+  var themeSel = document.getElementById("themeSel");
+  var sampleSel = document.getElementById("sampleSel");
+  var copySrc = document.getElementById("copySrc");
+  var lastHtml = "";
+
+  /* 填充主题下拉 */
+  WX.listThemes().forEach(function (t) {
+    var o = document.createElement("option");
+    o.value = t.name; o.textContent = t.label;
+    themeSel.appendChild(o);
+  });
+
+  /* 填充示例下拉 */
+  WX_SAMPLES.forEach(function (s, i) {
+    var o = document.createElement("option");
+    o.value = String(i); o.textContent = s.label;
+    sampleSel.appendChild(o);
+  });
+
+  function currentEngine() {
+    var theme = WX.getTheme(themeSel.value);
+    return new WX.Engine(theme);
+  }
+
+  function render() {
+    var md = editor.value;
+    var html;
+    try {
+      html = currentEngine().render(md);
+    } catch (e) {
+      statusEl.textContent = "渲染出错：" + e.message;
+      return;
+    }
+    lastHtml = html;
+    copySrc.innerHTML = html;
+    var leaves = (html.match(/leaf=""/g) || []).length;
+    var imgs = (html.match(/<img /g) || []).length;
+    var doc = '<!DOCTYPE html><html><head><meta charset="utf-8"></head>' +
+      '<body style="margin:0;background:#f1f3f6;padding:18px 0;">' + html + "</body></html>";
+    preview.srcdoc = doc;
+    statusEl.textContent = "已渲染 · leaf " + leaves + " · 图片 " + imgs;
+  }
+
+  var timer = null;
+  function scheduleRender() {
+    clearTimeout(timer);
+    timer = setTimeout(render, 350);
+  }
+
+  function copyArticle() {
+    var node = copySrc.firstChild;
+    if (!node) { render(); node = copySrc.firstChild; }
+    function report(ok, msg) {
+      statusEl.textContent = msg;
+    }
+    if (navigator.clipboard && window.ClipboardItem) {
+      var data = [new ClipboardItem({
+        "text/html": new Blob([copySrc.innerHTML], { type: "text/html" }),
+        "text/plain": new Blob([copySrc.innerText || ""], { type: "text/plain" })
+      })];
+      navigator.clipboard.write(data).then(function () {
+        report(true, "已复制（富文本），可到公众号后台 Ctrl+V");
+      }, function () { fallbackCopy(); });
+    } else fallbackCopy();
+
+    function fallbackCopy() {
+      var range = document.createRange();
+      range.selectNodeContents(copySrc);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      try {
+        if (document.execCommand("copy"))
+          report(true, "已复制（兼容模式），可到公众号后台 Ctrl+V");
+        else report(false, "复制失败，请手动全选复制");
+      } catch (e) { report(false, "复制失败：" + e.message); }
+      sel.removeAllRanges();
+    }
+  }
+
+  function downloadHtml() {
+    var html = '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n' +
+      '<title>排版预览</title>\n</head>\n<body style="margin:0;background:#f1f3f6;padding:18px 0;">\n' +
+      lastHtml + "\n</body>\n</html>";
+    var blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "排版预览.html";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    statusEl.textContent = "已下载 HTML";
+  }
+
+  /* 事件 */
+  editor.addEventListener("input", scheduleRender);
+  themeSel.addEventListener("change", render);
+  document.getElementById("renderBtn").addEventListener("click", render);
+  document.getElementById("copyBtn").addEventListener("click", copyArticle);
+  document.getElementById("downloadBtn").addEventListener("click", downloadHtml);
+  sampleSel.addEventListener("change", function () {
+    var s = WX_SAMPLES[Number(sampleSel.value)];
+    editor.value = s.md;
+    /* 尽量切到与示例匹配的主题 */
+    var map = { "蓝白": "blue-editorial", "暖橙": "warm-horizontal",
+                "暖棕": "warm-brown-journal", "翠绿": "green-tech" };
+    Object.keys(map).forEach(function (k) {
+      if (s.label.indexOf(k) >= 0) themeSel.value = map[k];
+    });
+    render();
+  });
+
+  /* 初始：载入共享示例 */
+  editor.value = WX_SAMPLES[0].md;
+  render();
+})();
+</script>
+</body>
+</html>

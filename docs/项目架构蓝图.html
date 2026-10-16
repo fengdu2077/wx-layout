@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>公众号排版工坊 · wx-layout 架构蓝图</title>
+<style>
+  :root{ --blue:#2563eb; --blue2:#3b82f6; --ink:#111827; --text:#374151; --muted:#6b7280;
+         --line:#e5e7eb; --green:#16a34a; --orange:#ea8a2e; --purple:#7c3aed; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:#f4f5f7; color:var(--text);
+        font-family:-apple-system,system-ui,'PingFang SC','Microsoft YaHei',sans-serif; line-height:1.7; }
+  .wrap{ max-width:1080px; margin:0 auto; padding:34px 22px 80px; }
+  h1{ font-size:27px; color:var(--ink); margin:0 0 4px; }
+  .goal{ color:var(--muted); margin:0 0 8px; font-size:15px; }
+  .goal b{ color:var(--blue); }
+  .codename{ display:inline-block; font-family:ui-monospace,Consolas,monospace; font-size:12px;
+             background:#eef2ff; color:var(--blue); border:1px solid #c7d2fe; border-radius:20px;
+             padding:2px 12px; margin-left:8px; vertical-align:3px; }
+  h2{ font-size:19px; color:var(--ink); margin:40px 0 14px;
+      border-left:4px solid var(--blue); padding-left:10px; }
+  .card{ background:#fff; border:1px solid var(--line); border-radius:14px; padding:22px;
+         box-shadow:0 2px 10px rgba(0,0,0,.04); }
+
+  .lines{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .line{ border-radius:14px; padding:18px; border:1px solid var(--line); }
+  .line.a{ background:#f5f8ff; border-color:#cdddff; }
+  .line.b{ background:#faf5ff; border-color:#e2d4ff; }
+  .line h3{ margin:0 0 8px; font-size:16px; }
+  .line.a h3{ color:var(--blue); } .line.b h3{ color:var(--purple); }
+  .line p{ margin:0; font-size:14px; }
+  .flow{ font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:var(--ink);
+         margin-top:10px; background:#fff; border:1px dashed #cbd5e1; border-radius:8px; padding:9px 11px; }
+
+  .skills{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .skill{ border-radius:14px; padding:18px; border:1px solid var(--line); }
+  .skill.s1{ background:#faf5ff; border-color:#e2d4ff; }
+  .skill.s2{ background:#f0fdf4; border-color:#bbf7d0; }
+  .skill .kname{ font-family:ui-monospace,Consolas,monospace; font-size:13px; font-weight:800; }
+  .skill.s1 .kname{ color:var(--purple); } .skill.s2 .kname{ color:var(--green); }
+  .skill h3{ margin:4px 0 8px; font-size:16px; color:var(--ink); }
+  .skill ul{ margin:0; padding-left:18px; } .skill li{ font-size:13px; margin:4px 0; }
+  .skill .freq{ font-size:12px; color:var(--muted); }
+
+  .stack{ display:flex; flex-direction:column; gap:8px; }
+  .layer{ border-radius:10px; padding:12px 16px; border:1px solid var(--line); }
+  .layer .lt{ font-weight:800; font-size:14px; color:var(--ink); }
+  .layer .ld{ font-size:13px; color:var(--muted); margin-top:2px; }
+  .L-input{ background:#f1f5f9; } .L-entry{ background:#ecfdf5; border-color:#a7f3d0; }
+  .L-core{ background:#eff6ff; border-color:#bfdbfe; } .L-themes{ background:#fff7ed; border-color:#fed7aa; }
+  .L-out{ background:#f1f5f9; }
+  .arrow{ text-align:center; color:#94a3b8; font-size:18px; line-height:1; }
+  .core-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:9px; }
+  .core-grid span{ background:#fff; border:1px solid #cdddff; border-radius:7px; padding:6px 8px;
+                   font-size:12.5px; text-align:center; color:var(--ink); }
+  .theme-row{ display:flex; flex-wrap:wrap; gap:8px; margin-top:9px; }
+  .theme-row span{ background:#fff; border:1px solid #fed7aa; border-radius:7px; padding:5px 11px;
+                   font-size:12.5px; color:var(--ink); font-family:ui-monospace,Consolas,monospace; }
+  .theme-row span.new{ border-style:dashed; color:var(--muted); }
+
+  .cardflow{ display:grid; grid-template-columns:1fr 1.1fr 1.4fr; gap:14px; align-items:stretch; }
+  .cf{ border-radius:12px; padding:16px; border:1px solid var(--line); font-size:13px; }
+  .cf.src{ background:#f8fafc; } .cf.ir{ background:#f5f3ff; border-color:#ddd6fe; }
+  .cf.outs{ background:#fff; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .cf h4{ margin:0 0 8px; font-size:13.5px; color:var(--ink); }
+  .cf pre{ margin:0; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; line-height:1.6;
+           white-space:pre-wrap; word-break:break-word; }
+  .mini{ border-radius:10px; padding:12px; border:1px solid var(--line); }
+  .mini.ma{ background:#f5f8ff; border-color:#cdddff; } .mini.mb{ background:#fff7ed; border-color:#fed7aa; }
+  .mini b{ font-size:12.5px; display:block; margin-bottom:5px; }
+  .mini .ph{ height:46px; border-radius:6px; background:linear-gradient(135deg,#93c5fd,#3b82f6);
+             margin-bottom:7px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:11px; }
+  .mini.mb .row{ display:flex; gap:8px; align-items:center; }
+  .mini.mb .sq{ width:34px; height:34px; border-radius:6px; background:#fed7aa; flex-shrink:0; }
+  .mini .ln{ height:7px; border-radius:4px; background:#d1d5db; margin:4px 0; }
+  .mini .btn{ display:inline-block; margin-top:7px; font-size:11px; background:var(--blue); color:#fff;
+              border-radius:5px; padding:2px 10px; }
+  .mini.mb .btn{ display:none; }
+  .mini .noimg{ font-size:11px; color:#c26a12; text-align:center; border:1px dashed #fdba74;
+                border-radius:6px; padding:5px; margin-bottom:6px; }
+
+  .principles{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .princ{ border-radius:12px; padding:16px; border:1px solid var(--line); background:#fbfcfe; }
+  .princ b{ color:var(--ink); font-size:14.5px; display:block; margin-bottom:5px; }
+  .princ p{ margin:0; font-size:13px; color:var(--muted); }
+
+  pre.tree{ background:#0f172a; color:#dbe4f0; border-radius:12px; padding:18px 20px;
+            font-family:ui-monospace,Consolas,monospace; font-size:13px; line-height:1.75;
+            overflow:auto; margin:0; }
+  .c-cm{ color:#7dd3fc; } .c-cg{ color:#86efac; } .c-cy{ color:#fcd34d; } .c-cp{ color:#c4b5fd; }
+
+  .facts{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .fact{ border:1px solid var(--line); border-radius:12px; padding:15px 17px; background:#fff; }
+  .fact h4{ margin:0 0 8px; font-size:14px; color:var(--ink); }
+  .fact ul{ margin:0; padding-left:18px; } .fact li{ font-size:13px; margin:5px 0; }
+  code{ background:#eef2f7; border-radius:4px; padding:1px 6px; font-family:ui-monospace,Consolas,monospace;
+        font-size:12.5px; color:#be185d; }
+
+  .road{ display:grid; grid-template-columns:repeat(5,1fr); }
+  .phase{ text-align:center; padding:0 8px; position:relative; }
+  .phase .dot{ width:30px; height:30px; border-radius:50%; background:#cbd5e1; color:#fff;
+               line-height:30px; font-weight:800; margin:0 auto 9px; font-size:14px; z-index:2; position:relative; }
+  .phase.done .dot{ background:var(--green); }
+  .phase.now .dot{ background:var(--blue); box-shadow:0 0 0 5px rgba(37,99,235,.18); }
+  .phase b{ font-size:13.5px; color:var(--ink); display:block; }
+  .phase small{ font-size:12px; color:var(--muted); display:block; margin-top:3px; }
+  .phase:not(:last-child)::after{ content:''; position:absolute; top:15px; left:60%; right:-40%;
+               height:2px; background:#cbd5e1; z-index:1; }
+  .phase.done:not(:last-child)::after{ background:var(--green); }
+
+  @media(max-width:880px){ .lines,.skills,.facts{grid-template-columns:1fr;}
+    .principles{grid-template-columns:1fr;} .cardflow{grid-template-columns:1fr;}
+    .core-grid{grid-template-columns:1fr;} .road{grid-template-columns:1fr; gap:14px;}
+    .phase:not(:last-child)::after{display:none;} .cf.outs{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>公众号排版工坊<span class="codename">wx-layout</span></h1>
+  <p class="goal">目标：<b>免费、离线、可复用</b>的公众号模块化排版系统 —— 让 AI 每次按模块自动排版，并能低成本复刻任意公众号主题、以「内核 + 多主题」支撑未来做成服务分发给别人；替代付费 md2wechat。</p>
+
+  <h2>一、两条核心能力线</h2>
+  <div class="lines">
+    <div class="line a">
+      <h3>线 A · 写作排版（日常）</h3>
+      <p>把「Markdown + 模块标记」变成可直接粘贴的微信正文。</p>
+      <div class="flow">素材/想法 → 选主题写定制 md → 渲染微信 HTML → 一键复制 → 后台 Ctrl+V</div>
+    </div>
+    <div class="line b">
+      <h3>线 B · 主题生产（偶尔）</h3>
+      <p>把任意公众号文章归纳成一套可插拔主题，增量进主题库。</p>
+      <div class="flow">目标文章 → skill 提取归纳 → themes\新主题.py → 回填验证 → 入库</div>
+    </div>
+  </div>
+
+  <h2>二、两个 AI Skill（随仓库 <code>skills/</code> 提供）</h2>
+  <div class="skills">
+    <div class="skill s1">
+      <div class="kname">wx-theme-extractor</div>
+      <h3>Skill 1 · 主题提取器<span class="freq">（线 B · 偶尔）</span></h3>
+      <ul>
+        <li>输入：目标文章保存页（.mhtml/.html，取 #js_content）+ 主题名</li>
+        <li>脚本抽 DOM 与样式；AI 做语义归纳、槽位识别、令牌提炼，样式只来自真实页面</li>
+        <li>生成 <code>themes\新主题.py</code> 与 <code>web/themes</code> JS 双端，diff 保真 + parity 校验后入库</li>
+      </ul>
+    </div>
+    <div class="skill s2">
+      <div class="kname">wx-layout</div>
+      <h3>Skill 2 · 排版器<span class="freq">（线 A · 高频入口）</span></h3>
+      <ul>
+        <li>输入：用户<b>已写好的成稿</b>（文件或全文）+ 指定主题（或默认）；只排版、不代写</li>
+        <li>读目标主题的「模块契约」，保留原文、只加 <code>:::模块</code> 标记</li>
+        <li>调 <code>render.py</code> 渲染、打开预览、一键复制</li>
+      </ul>
+    </div>
+  </div>
+  <p style="font-size:12.5px;color:var(--muted);margin:10px 2px 0">
+    边界：两个 skill 都<b style="color:#111827">不自己渲染</b>，渲染由确定性程序 <code>render.py / wx_core</code> 完成。AI 负责看懂，程序负责精确。
+    两个 skill 位于 <code>skills/</code>（含 SKILL.md、参考文档与脚本），可安装到 Agent 或直接让任意 AI 照做。
+    （可选 Skill 3「后台发布器」：自动登录、传草稿、插图、群发，当前手动粘贴，暂不做。）</p>
+
+  <h2>三、线 A 分层架构</h2>
+  <div class="card">
+    <div class="stack">
+      <div class="layer L-input"><div class="lt">输入：Markdown + <code>:::模块</code></div>
+        <div class="ld">人写，或 wx-layout 按主题契约生成</div></div>
+      <div class="arrow">▼</div>
+      <div class="layer L-entry"><div class="lt">入口 render.py　<span style="font-weight:400;color:#6b7280">（--theme 主题名 / 拖拽 .bat）</span></div>
+        <div class="ld">读文件、加载指定主题、调度内核、产出页面</div></div>
+      <div class="arrow">▼</div>
+      <div class="layer L-core"><div class="lt">wx_core · 共享内核（只此一份，所有主题复用）</div>
+        <div class="core-grid">
+          <span>解析层<br><small>md → role + 字段(IR)</small></span>
+          <span>微信适配<br><small>leaf / textstyle</small></span>
+          <span>行内格式<br><small>加粗 / 链接</small></span>
+          <span>主题加载 & 路由<br><small>role → 主题渲染器</small></span>
+          <span>复制页<br><small>ClipboardItem</small></span>
+          <span>质检钩子<br><small>校验 / fallback</small></span>
+        </div></div>
+      <div class="arrow">▼</div>
+      <div class="layer L-themes"><div class="lt">themes\ · 可插拔主题（每套独立，互不影响）</div>
+        <div class="theme-row">
+          <span>蓝白杂志.py</span><span class="new">深色极简.py</span>
+          <span class="new">手账风.py</span><span class="new">… 加一套 = 新增一个文件</span>
+        </div></div>
+      <div class="arrow">▼</div>
+      <div class="layer L-out"><div class="lt">输出：微信内部格式 HTML → 一键复制 → 公众号后台</div></div>
+    </div>
+  </div>
+
+  <h2>四、核心机制：role + 字段契约 + fallback</h2>
+  <p style="font-size:13.5px;color:var(--muted);margin:0 0 12px">
+    作者写「语义 + 全量字段」，主题决定「用哪些字段、怎么排」；不引用的字段自然不渲染，字段缺失走降级。</p>
+  <div class="card">
+    <div class="cardflow">
+      <div class="cf src">
+        <h4>① 作者写一次 :::card</h4>
+        <pre>:::card
+![封面](cover.jpg)
+标题文字
+这是摘要内容……
+[阅读更多](https://…)
+:::</pre>
+      </div>
+      <div class="cf ir">
+        <h4>② 解析为字段对象（IR）</h4>
+        <pre>role: card
+fields:
+  image  : cover.jpg
+  title  : 标题文字
+  summary: 这是摘要…
+  link   : https://…
+  action : 阅读更多</pre>
+      </div>
+      <div class="cf outs">
+        <div class="mini ma">
+          <b style="color:var(--blue)">主题 A · 纵向 / 全字段</b>
+          <div class="ph">封面图</div>
+          <div class="ln" style="width:80%"></div>
+          <div class="ln"></div><div class="ln" style="width:60%"></div>
+          <span class="btn">阅读更多</span>
+        </div>
+        <div class="mini mb">
+          <b style="color:var(--orange)">主题 B · 横向 / 仅标题摘要</b>
+          <div class="noimg">不渲染图片 / 按钮</div>
+          <div class="row">
+            <div class="sq"></div>
+            <div style="flex:1"><div class="ln" style="width:70%"></div><div class="ln"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p style="margin:14px 0 0;font-size:12.5px;color:var(--muted)">
+      三个契约条件：⓵ 模块解析成 role + 字段字典（非位置文本）；⓶ 主题模板按字段取用、自定布局；⓷ 字段可选，缺失用占位/省略/默认值降级，不报错留白。
+      常用 role 定<b style="color:#111827">标准字段契约</b>以保证跨主题可迁移；极端版式可用「主题特有 role」，但换主题时走 fallback。</p>
+  </div>
+
+  <h2>五、三条设计原则</h2>
+  <div class="principles">
+    <div class="princ"><b>AI 看懂，代码执行</b><p>归纳 / 写稿交给 AI；解析 / 渲染 / 复制 / 提取 / diff 交给确定性脚本。</p></div>
+    <div class="princ"><b>内核共享，主题隔离</b><p>稳定通用的 wx_core 只一份；易变、差异大的模板每套独立。</p></div>
+    <div class="princ"><b>只做增量，不改存量</b><p>加主题 = 新增一个文件，老主题零改动，杜绝连锁回归。</p></div>
+  </div>
+
+  <h2>六、目标目录结构</h2>
+  <pre class="tree">wx-layout/
+├── <span class="c-cg">render.py</span>              # 入口：python render.py 文章.md --theme 蓝白杂志
+├── <span class="c-cg">wx_core.py</span>             # 共享内核（role/字段 IR + leaf 适配 + 复制），只此一份
+├── <span class="c-cg">serve.py</span>               # 本地三栏工作台
+├── <span class="c-cy">*.bat</span>                  # Windows 双击/拖拽入口（渲染/工作台/离线网页/打包）
+├── <span class="c-cm">README.md / LICENSE</span>   # 使用说明 / MIT 协议
+├── <span class="c-cp">docs\</span>                  # 全部文档：AI排版手册 / AI调用指南 / 主题Demo规范 / 本蓝图
+├── <span class="c-cp">themes\</span>                # 可插拔主题：视觉模板 + 模块契约
+│    ├── <span class="c-cy">蓝白杂志.py</span>
+│    ├── <span class="c-cy">暖棕手记.py</span>
+│    └── <span class="c-cy">…</span>
+├── <span class="c-cp">tools\</span>                 # 提取 / 对比 / 打包 / 校验脚本（供 skill 调用）
+│    ├── <span class="c-cg">extract_dom.py</span>       # DOM 与内联样式抽取
+│    └── <span class="c-cg">diff_render.py</span>        # 原文 vs 新模板 并排对比
+├── <span class="c-cp">skills\</span>                # 两个 AI Skill（随仓库开源）
+│    ├── <span class="c-cy">wx-layout\</span>           # 排版器：只排版不代写 + 契约脚本
+│    └── <span class="c-cy">wx-theme-extractor\</span>  # 主题提取器：流程 + 主题制作规范
+├── <span class="c-cp">web\</span>                   # 纯网页版（core.js 内核 + 主题 JS + 示例）
+├── <span class="c-cp">examples\</span>               # 各主题示例 demo（md + 渲染 html）
+└── <span class="c-cp">dist\</span>                  # 打包好的零依赖单文件分发产物
+
+（wx-layout 调 render.py 只排版不代写；wx-theme-extractor 写入 themes\ 与 web/themes\，双端校验后入库）</pre>
+
+  <h2>七、关键技术事实（踩坑沉淀）</h2>
+  <div class="facts">
+    <div class="fact"><h4>微信格式</h4><ul>
+      <li>只保留<b>内联样式</b>；class / 外部 CSS / <code>&lt;style&gt;</code> 被过滤。</li>
+      <li>文字包 <code>&lt;span leaf=""&gt;</code>；加粗 <code>&lt;span textstyle=""&gt;</code>；图片有 span 包裹。</li>
+      <li>列表用文本 <code>• </code>，不用 <code>ul/li</code>。</li>
+    </ul></div>
+    <div class="fact"><h4>复制</h4><ul>
+      <li>必须 <code>ClipboardItem</code> 直写原始 HTML。</li>
+      <li>手动 Ctrl+A 会带入数百处计算样式污染、抹掉 flex。</li>
+    </ul></div>
+    <div class="fact"><h4>抓取与素材</h4><ul>
+      <li>mp.weixin curl 报「环境异常」；保存网页或 skill 驱动内置浏览器。</li>
+      <li>视频 / 小程序 / SVG 静态提取不到 → 占位 + 后台手动替换。</li>
+    </ul></div>
+    <div class="fact"><h4>蓝白主题令牌（真实值）</h4><ul>
+      <li>色：<code>#2563eb / #3b82f6 / #dbeafe / #111827 / #374151 / #9ca3af</code></li>
+      <li>IBM Plex 字体栈；正文 15px / 1.95 / 两端对齐。</li>
+      <li>原文官方校验仅 2 处背景渐变，无行高 / 对齐问题。</li>
+    </ul></div>
+  </div>
+
+  <h2>八、落地路线图</h2>
+  <div class="card">
+    <div class="road">
+      <div class="phase done"><div class="dot">0</div><b>单文件验证</b><small>单文件复刻目标排版</small></div>
+      <div class="phase done"><div class="dot">1</div><b>重构定接口</b><small>wx_core + themes\蓝白杂志</small></div>
+      <div class="phase done"><div class="dot">2</div><b>AI 协作</b><small>通用规则，任意 AI 可用</small></div>
+      <div class="phase done"><div class="dot">3</div><b>多主题</b><small>多套主题验证泛化</small></div>
+      <div class="phase now"><div class="dot">4</div><b>服务化</b><small>GUI / 上线 Pages 分发</small></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
